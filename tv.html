@@ -1,1 +1,650 @@
 
+
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#030407">
+    <title>Muse TV — Receiver</title>
+    <link rel="icon" type="image/png" href="./logo.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <style>
+        :root {
+            --theme-r: 98;
+            --theme-g: 120;
+            --theme-b: 235;
+            --theme-bright-r: 165;
+            --theme-bright-g: 195;
+            --theme-bright-b: 255;
+            --theme-dark-r: 10;
+            --theme-dark-g: 13;
+            --theme-dark-b: 26;
+            --theme-color: rgb(98, 120, 235);
+            --theme-color-bright: rgb(165, 195, 255);
+        }
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        html, body {
+            width: 100vw;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #030407;
+            color: #ffffff;
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        #tv-ambient-bg {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            background:
+                radial-gradient(circle at 18% 24%, rgba(var(--theme-bright-r), var(--theme-bright-g), var(--theme-bright-b), 0.32) 0%, transparent 52%),
+                radial-gradient(circle at 82% 72%, rgba(var(--theme-r), var(--theme-g), var(--theme-b), 0.28) 0%, transparent 58%),
+                linear-gradient(160deg, rgb(var(--theme-dark-r), var(--theme-dark-g), var(--theme-dark-b)) 0%, #040509 70%, #020305 100%);
+            transition: background 0.8s ease;
+        }
+
+        .tv-glass {
+            background: linear-gradient(145deg, rgba(255,255,255,0.08) 0%, rgba(10,12,20,0.68) 100%);
+            backdrop-filter: blur(28px) saturate(160%);
+            -webkit-backdrop-filter: blur(28px) saturate(160%);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 28px 65px -12px rgba(0, 0, 0, 0.85);
+        }
+
+        /* ONLY 3 CONTROLS ON TV: BACK, PLAY/PAUSE, NEXT */
+        .tv-transport-btn {
+            background: rgba(255, 255, 255, 0.09);
+            border: 1.5px solid rgba(255, 255, 255, 0.2);
+            color: #ffffff;
+            border-radius: 9999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .tv-transport-btn:hover, .tv-transport-btn:focus {
+            transform: scale(1.1);
+            background: rgba(var(--theme-r), var(--theme-g), var(--theme-b), 0.45);
+            border-color: var(--theme-color-bright);
+            box-shadow: 0 0 30px rgba(var(--theme-bright-r), var(--theme-bright-g), var(--theme-bright-b), 0.55);
+        }
+
+        #tv-lyrics-scroller {
+            height: 74vh;
+            overflow-y: auto;
+            padding: 28vh 2rem;
+            mask-image: linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%);
+        }
+        #tv-lyrics-scroller::-webkit-scrollbar { display: none; }
+
+        .tv-lyric-line {
+            font-size: clamp(1.6rem, 2.8vw, 2.75rem);
+            font-weight: 800;
+            line-height: 1.32;
+            letter-spacing: -0.025em;
+            margin: 1.4rem 0;
+            color: rgba(255, 255, 255, 0.22);
+            transform-origin: left center;
+            transform: scale(0.94);
+            opacity: 0.48;
+            transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.28s ease;
+        }
+
+        .tv-lyric-line.is-active {
+            transform: scale(1.02);
+            opacity: 1;
+            color: rgba(255, 255, 255, 0.35);
+        }
+
+        .tv-lyric-word {
+            display: inline-block;
+            margin-right: 0.26em;
+            --word-fill: 0%;
+            background-image: linear-gradient(
+                90deg,
+                #ffffff 0%,
+                var(--theme-color-bright) calc(var(--word-fill) * 0.88),
+                rgba(255, 255, 255, 0.26) var(--word-fill),
+                rgba(255, 255, 255, 0.26) 100%
+            );
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .tv-lyric-line:not(.is-active) .tv-lyric-word {
+            background-image: none;
+            -webkit-text-fill-color: currentColor;
+        }
+
+        .tv-lyric-line.line-plain-active {
+            background-image: linear-gradient(90deg, #ffffff 0%, var(--theme-color-bright) 70%, var(--theme-color) 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .tv-sub-line {
+            display: block;
+            font-size: clamp(1.05rem, 1.7vw, 1.55rem);
+            font-weight: 600;
+            margin-top: 0.35rem;
+            color: var(--theme-color-bright);
+            -webkit-text-fill-color: var(--theme-color-bright);
+        }
+    </style>
+</head>
+<body>
+    <div id="tv-ambient-bg"></div>
+    <audio id="tv-audio-engine" preload="auto" crossorigin="anonymous"></audio>
+
+    <!-- DYNAMIC TV VOLUME HUD (Triggered when Phone changes TV Volume) -->
+    <div id="tv-volume-hud" class="fixed top-8 right-10 z-50 tv-glass px-5 py-3 rounded-2xl flex items-center gap-3.5 opacity-0 pointer-events-none transition-opacity duration-300">
+        <i class="fa-solid fa-volume-high text-emerald-300 text-lg"></i>
+        <div class="w-36 h-2.5 rounded-full bg-white/15 overflow-hidden">
+            <div id="tv-volume-hud-bar" class="h-full bg-gradient-to-r from-emerald-400 to-white" style="width: 66.7%;"></div>
+        </div>
+        <span id="tv-volume-hud-text" class="text-sm font-extrabold tabular-nums">100%</span>
+    </div>
+
+    <!-- PAIRING OVERLAY (Shown before phone connects) -->
+    <div id="tv-pairing-screen" class="fixed inset-0 z-40 flex items-center justify-center p-8">
+        <div class="tv-glass rounded-[2.5rem] max-w-2xl w-full p-10 flex flex-col md:flex-row items-center justify-between gap-8">
+            <div class="space-y-4 text-center md:text-left">
+                <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 text-xs font-extrabold uppercase tracking-widest">
+                    <i class="fa-solid fa-tv"></i>
+                    <span>Muse Universal TV Receiver</span>
+                </div>
+                <h1 class="text-3xl sm:text-4xl font-black tracking-tight text-white">Ready to Cast</h1>
+                <p class="text-sm text-white/65 leading-relaxed">
+                    Open <b>Muse</b> on your phone, tap the <b>Cast TV</b> button in the player, and enter this 4-digit TV code:
+                </p>
+                <div id="tv-pin-code-display" class="text-5xl sm:text-6xl font-black tracking-[0.28em] text-emerald-300 tabular-nums py-2">
+                    ----
+                </div>
+                <p id="tv-conn-status" class="text-xs font-semibold text-white/50">Waiting for phone controller...</p>
+            </div>
+            <div class="flex flex-col items-center gap-3 flex-shrink-0">
+                <div class="w-44 h-44 rounded-3xl bg-white p-3 shadow-2xl">
+                    <img id="tv-pair-qr" alt="Scan to Cast" class="w-full h-full object-contain" src="" />
+                </div>
+                <span class="text-[11px] font-bold text-white/50">Or scan with phone camera</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN TV STAGE (Left: Cover + Only 3 Controls | Right: Word-by-Word Lyrics) -->
+    <div id="tv-main-stage" class="relative z-10 w-full h-full grid grid-cols-12 items-center px-10 lg:px-16 gap-10">
+        <!-- LEFT COLUMN: ARTWORK, META & ONLY THE 3 CONTROLS (BACK, PLAY/PAUSE, NEXT) -->
+        <div class="col-span-12 lg:col-span-5 flex flex-col items-center justify-center space-y-6">
+            <div class="w-[36vh] h-[36vh] max-w-[380px] max-h-[380px] rounded-[2.2rem] overflow-hidden border border-white/20 shadow-[0_30px_70px_rgba(0,0,0,0.85)] bg-black/40">
+                <img id="tv-cover" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='500'%3E%3Crect width='500' height='500' fill='%2310131d'/%3E%3C/svg%3E" class="w-full h-full object-cover" />
+            </div>
+
+            <div class="text-center max-w-md w-full space-y-1">
+                <h2 id="tv-title" class="text-2xl lg:text-3xl font-extrabold text-white truncate tracking-tight">Muse TV</h2>
+                <p id="tv-artist" class="text-sm lg:text-base font-semibold text-white/65 truncate">Connected to Phone Controller</p>
+            </div>
+
+            <!-- SUBTLE READ-ONLY PROGRESS BAR -->
+            <div class="w-full max-w-sm space-y-1.5">
+                <div class="w-full h-1.5 rounded-full bg-white/15 overflow-hidden">
+                    <div id="tv-progress-fill" class="h-full bg-gradient-to-r from-indigo-400 via-sky-300 to-white transition-all duration-150" style="width: 0%;"></div>
+                </div>
+                <div class="flex justify-between text-[11px] font-bold text-white/45 tabular-nums">
+                    <span id="tv-curr-time">0:00</span>
+                    <span id="tv-rem-time">-0:00</span>
+                </div>
+            </div>
+
+            <!-- STRICTLY THE 3 ALLOWED TV CONTROLS: BACK, PLAY/PAUSE, NEXT -->
+            <div class="flex items-center justify-center gap-7 pt-1">
+                <button id="tv-btn-prev" tabindex="1" onclick="sendTvCommand('PREV')" class="tv-transport-btn w-14 h-14" title="Previous">
+                    <i class="fa-solid fa-backward-step text-lg"></i>
+                </button>
+                <button id="tv-btn-play" tabindex="2" onclick="handleTvPlayButtonTap()" class="tv-transport-btn w-20 h-20" title="Play / Pause">
+                    <i id="tv-play-icon" class="fa-solid fa-play text-2xl ml-1"></i>
+                </button>
+                <button id="tv-btn-next" tabindex="3" onclick="sendTvCommand('NEXT')" class="tv-transport-btn w-14 h-14" title="Next">
+                    <i class="fa-solid fa-forward-step text-lg"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- RIGHT COLUMN: REAL-TIME WORD-BY-WORD SYNCHRONIZED LYRICS -->
+        <div class="hidden lg:flex lg:col-span-7 flex-col justify-center h-full">
+            <div id="tv-lyrics-scroller">
+                <div id="tv-lyrics-lines" class="flex flex-col">
+                    <div class="tv-lyric-line is-active line-plain-active">Word-by-word lyrics will appear here when music starts...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const PEER_PREFIX = "muse-tv-room-v6-";
+        const tvAudio = document.getElementById("tv-audio-engine");
+        const pairingScreen = document.getElementById("tv-pairing-screen");
+
+        let tvPin = sessionStorage.getItem("muse_tv_self_pin") || String(Math.floor(1000 + Math.random() * 9000));
+        try { sessionStorage.setItem("muse_tv_self_pin", tvPin); } catch (e) {}
+        document.getElementById("tv-pin-code-display").innerText = tvPin;
+
+        const mainAppUrl = window.location.href.split("?")[0].replace(/tv\.html$/i, "index.html");
+        document.getElementById("tv-pair-qr").src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=4&data=${encodeURIComponent(mainAppUrl)}`;
+
+        let tvPeer = null;
+        let controllerConn = null;
+        let localChannel = null;
+        let activeTrackId = null;
+        let activeCandidateList = [];
+        let activeCandidateIdx = 0;
+        let tvLyricsTimeline = [];
+        let activeLyricIdx = -1;
+        let volumeHudTimer = null;
+
+        // Web Audio GainNode so phone can boost TV sound from 0% up to 150% dynamically!
+        let audioCtx = null;
+        let gainNode = null;
+        let sourceNode = null;
+        let currentVolumeGain = 1.0;
+
+        function ensureWebAudioGain() {
+            try {
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                if (!Ctx) return;
+                if (!audioCtx) {
+                    audioCtx = new Ctx();
+                    sourceNode = audioCtx.createMediaElementSource(tvAudio);
+                    gainNode = audioCtx.createGain();
+                    gainNode.gain.value = currentVolumeGain;
+                    sourceNode.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                }
+                if (audioCtx.state === "suspended") {
+                    audioCtx.resume().catch(() => {});
+                }
+            } catch (e) {}
+        }
+
+        function applyTvVolume(volFloat) {
+            currentVolumeGain = Math.max(0, Math.min(1.5, Number(volFloat) ?? 1.0));
+            tvAudio.volume = Math.min(1.0, currentVolumeGain);
+            if (gainNode && audioCtx) {
+                gainNode.gain.setValueAtTime(currentVolumeGain, audioCtx.currentTime);
+            }
+
+            const pct = Math.round(currentVolumeGain * 100);
+            const hud = document.getElementById("tv-volume-hud");
+            const bar = document.getElementById("tv-volume-hud-bar");
+            const txt = document.getElementById("tv-volume-hud-text");
+            if (hud && bar && txt) {
+                bar.style.width = `${Math.min(100, (pct / 150) * 100).toFixed(1)}%`;
+                txt.innerText = `${pct}%`;
+                hud.classList.remove("opacity-0");
+                clearTimeout(volumeHudTimer);
+                volumeHudTimer = setTimeout(() => hud.classList.add("opacity-0"), 2200);
+            }
+        }
+
+        function applyTvThemeRGB(rgb) {
+            if (!rgb) return;
+            const root = document.documentElement.style;
+            root.setProperty("--theme-r", rgb.r || 98);
+            root.setProperty("--theme-g", rgb.g || 120);
+            root.setProperty("--theme-b", rgb.b || 235);
+            root.setProperty("--theme-bright-r", rgb.brightR || 165);
+            root.setProperty("--theme-bright-g", rgb.brightG || 195);
+            root.setProperty("--theme-bright-b", rgb.brightB || 255);
+            root.setProperty("--theme-dark-r", rgb.darkR || 10);
+            root.setProperty("--theme-dark-g", rgb.darkG || 13);
+            root.setProperty("--theme-dark-b", rgb.darkB || 26);
+            root.setProperty("--theme-color", `rgb(${rgb.r || 98}, ${rgb.g || 120}, ${rgb.b || 235})`);
+            root.setProperty("--theme-color-bright", `rgb(${rgb.brightR || 165}, ${rgb.brightG || 195}, ${rgb.brightB || 255})`);
+        }
+
+        function renderTvLyrics(timeline) {
+            tvLyricsTimeline = Array.isArray(timeline) ? timeline : [];
+            activeLyricIdx = -1;
+            const container = document.getElementById("tv-lyrics-lines");
+            container.innerHTML = "";
+
+            if (!tvLyricsTimeline.length) {
+                container.innerHTML = `<div class="tv-lyric-line is-active line-plain-active" style="opacity:0.5;">♪ Instrumental / Lyrics Syncing...</div>`;
+                return;
+            }
+
+            const frag = document.createDocumentFragment();
+            tvLyricsTimeline.forEach((line, idx) => {
+                const el = document.createElement("div");
+                el.className = "tv-lyric-line";
+                el.dataset.idx = idx;
+
+                if (Array.isArray(line.words) && line.words.length > 0 && !line.plainOnly) {
+                    const row = document.createElement("div");
+                    row.className = "tv-words-row";
+                    line.words.forEach((w) => {
+                        const sp = document.createElement("span");
+                        sp.className = "tv-lyric-word";
+                        sp.style.setProperty("--word-fill", "0%");
+                        sp.textContent = w.word;
+                        row.appendChild(sp);
+                    });
+                    el.appendChild(row);
+                } else {
+                    const d = document.createElement("div");
+                    d.textContent = line.text;
+                    el.appendChild(d);
+                }
+
+                if (line.secondaryText) {
+                    const sub = document.createElement("span");
+                    sub.className = "tv-sub-line";
+                    sub.textContent = line.secondaryText;
+                    el.appendChild(sub);
+                }
+                frag.appendChild(el);
+            });
+            container.appendChild(frag);
+        }
+
+        function syncTvLyrics(t) {
+            if (!tvLyricsTimeline.length) return;
+            let idx = 0;
+            for (let i = 0; i < tvLyricsTimeline.length; i++) {
+                const item = tvLyricsTimeline[i];
+                const nxt = tvLyricsTimeline[i + 1];
+                const ceil = nxt ? nxt.time : item.endTime + 10;
+                if (t >= item.time && t < ceil) {
+                    idx = i;
+                    break;
+                }
+            }
+
+            const container = document.getElementById("tv-lyrics-lines");
+            const scroller = document.getElementById("tv-lyrics-scroller");
+            const nodes = container.children;
+
+            if (idx !== activeLyricIdx) {
+                activeLyricIdx = idx;
+                for (let i = 0; i < nodes.length; i++) {
+                    const n = nodes[i];
+                    const item = tvLyricsTimeline[i];
+                    n.classList.remove("is-active", "line-plain-active");
+                    if (i === activeLyricIdx) {
+                        n.classList.add("is-active");
+                        if (!item?.words?.length || item.plainOnly) {
+                            n.classList.add("line-plain-active");
+                        }
+                    }
+                }
+                const activeNode = nodes[activeLyricIdx];
+                if (activeNode && scroller) {
+                    const boxRect = scroller.getBoundingClientRect();
+                    const lineRect = activeNode.getBoundingClientRect();
+                    const offset = (lineRect.top - boxRect.top) - (boxRect.height * 0.36) + (lineRect.height * 0.5);
+                    scroller.scrollBy({ top: offset, behavior: "smooth" });
+                }
+            }
+
+            const activeItem = tvLyricsTimeline[activeLyricIdx];
+            const activeNode = nodes[activeLyricIdx];
+            const wordsRow = activeNode?.querySelector(".tv-words-row");
+            if (activeItem?.words?.length && wordsRow) {
+                const spans = wordsRow.children;
+                for (let w = 0; w < spans.length; w++) {
+                    const wm = activeItem.words[w];
+                    const sp = spans[w];
+                    if (!wm || !sp) continue;
+                    if (t >= wm.endTime) {
+                        sp.style.setProperty("--word-fill", "100%");
+                    } else if (t >= wm.time && t < wm.endTime) {
+                        const pct = ((t - wm.time) / Math.max(0.05, wm.endTime - wm.time)) * 100;
+                        sp.style.setProperty("--word-fill", `${Math.min(100, Math.max(0, pct)).toFixed(1)}%`);
+                    } else {
+                        sp.style.setProperty("--word-fill", "0%");
+                    }
+                }
+            }
+        }
+
+        function handleControllerPacket(packet) {
+            if (!packet || typeof packet !== "object") return;
+            pairingScreen.classList.add("hidden");
+
+            if (packet.type === "PHONE_FULL_SYNC" && packet.state) {
+                const st = packet.state;
+                if (st.themeRGB) applyTvThemeRGB(st.themeRGB);
+                if (typeof st.volume === "number") applyTvVolume(st.volume);
+                if (Array.isArray(st.lyricsTimeline)) renderTvLyrics(st.lyricsTimeline);
+
+                if (st.track) {
+                    document.getElementById("tv-title").innerText = st.track.title || "Muse";
+                    document.getElementById("tv-artist").innerText = st.track.artist || "";
+                    if (st.track.coverUrl) {
+                        document.getElementById("tv-cover").src = st.track.coverUrl;
+                    }
+
+                    if (String(st.track.id) !== String(activeTrackId)) {
+                        activeTrackId = st.track.id;
+                        activeCandidateList = st.track.cascadeUrls?.length ? st.track.cascadeUrls : [st.track.streamUrl];
+                        activeCandidateIdx = 0;
+                        startTvStream(activeCandidateList[0], st.currentTime || 0, st.isPlaying);
+                    } else {
+                        if (typeof st.currentTime === "number" && Math.abs((tvAudio.currentTime || 0) - st.currentTime) > 2.2) {
+                            try { tvAudio.currentTime = st.currentTime; } catch (e) {}
+                        }
+                        if (st.isPlaying && tvAudio.paused) {
+                            ensureWebAudioGain();
+                            tvAudio.play().catch(() => {});
+                        } else if (!st.isPlaying && !tvAudio.paused) {
+                            tvAudio.pause();
+                        }
+                    }
+                }
+                return;
+            }
+
+            if (packet.type === "PHONE_TRANSPORT") {
+                if (packet.action === "PLAY") {
+                    ensureWebAudioGain();
+                    tvAudio.play().catch(() => {});
+                } else if (packet.action === "PAUSE") {
+                    tvAudio.pause();
+                } else if (packet.action === "SEEK" && typeof packet.seekTime === "number") {
+                    try { tvAudio.currentTime = packet.seekTime; } catch (e) {}
+                    syncTvLyrics(packet.seekTime);
+                }
+                return;
+            }
+
+            if (packet.type === "PHONE_VOLUME") {
+                applyTvVolume(packet.volume);
+                return;
+            }
+
+            if (packet.type === "PHONE_DISCONNECT") {
+                tvAudio.pause();
+                pairingScreen.classList.remove("hidden");
+            }
+        }
+
+        function startTvStream(url, startTime = 0, autoPlay = true) {
+            if (!url) return;
+            ensureWebAudioGain();
+            tvAudio.src = url;
+            if (startTime > 0.5) {
+                tvAudio.addEventListener("loadedmetadata", () => {
+                    try { tvAudio.currentTime = startTime; } catch (e) {}
+                }, { once: true });
+            }
+            if (autoPlay) {
+                tvAudio.play().catch(() => {
+                    activeCandidateIdx++;
+                    if (activeCandidateIdx < activeCandidateList.length) {
+                        startTvStream(activeCandidateList[activeCandidateIdx], startTime, autoPlay);
+                    }
+                });
+            }
+        }
+
+        tvAudio.addEventListener("play", () => {
+            document.getElementById("tv-play-icon").className = "fa-solid fa-pause text-2xl";
+            sendTelemetryToPhone();
+        });
+
+        tvAudio.addEventListener("pause", () => {
+            document.getElementById("tv-play-icon").className = "fa-solid fa-play text-2xl ml-1";
+            sendTelemetryToPhone();
+        });
+
+        tvAudio.addEventListener("ended", () => {
+            sendTvCommand("ENDED");
+        });
+
+        function formatMin(s) {
+            if (!s || !isFinite(s)) return "0:00";
+            const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+            return `${m}:${sec < 10 ? "0" : ""}${sec}`;
+        }
+
+        let lastTelemetrySent = 0;
+        tvAudio.addEventListener("timeupdate", () => {
+            const cur = tvAudio.currentTime || 0;
+            const dur = (tvAudio.duration && isFinite(tvAudio.duration)) ? tvAudio.duration : 195;
+            const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
+            document.getElementById("tv-progress-fill").style.width = `${pct.toFixed(1)}%`;
+            document.getElementById("tv-curr-time").innerText = formatMin(cur);
+            document.getElementById("tv-rem-time").innerText = "-" + formatMin(Math.max(0, dur - cur));
+            syncTvLyrics(cur);
+
+            const now = Date.now();
+            if (now - lastTelemetrySent > 350) {
+                lastTelemetrySent = now;
+                sendTelemetryToPhone();
+            }
+        });
+
+        function sendTelemetryToPhone() {
+            const msg = {
+                type: "TV_TELEMETRY",
+                currentTime: tvAudio.currentTime || 0,
+                duration: (tvAudio.duration && isFinite(tvAudio.duration)) ? tvAudio.duration : 0,
+                isPlaying: !tvAudio.paused,
+                volume: currentVolumeGain,
+                deviceName: "Fire TV / Smart TV"
+            };
+            if (controllerConn && controllerConn.open) {
+                try { controllerConn.send(msg); } catch (e) {}
+            }
+            if (localChannel) {
+                try { localChannel.postMessage(msg); } catch (e) {}
+            }
+        }
+
+        window.handleTvPlayButtonTap = () => {
+            ensureWebAudioGain();
+            if (tvAudio.src) {
+                if (tvAudio.paused) tvAudio.play().catch(() => {});
+                else tvAudio.pause();
+            }
+            sendTvCommand("TOGGLE_PLAY");
+        };
+
+        window.sendTvCommand = (cmd) => {
+            const msg = { type: "TV_COMMAND", command: cmd };
+            if (controllerConn && controllerConn.open) {
+                try { controllerConn.send(msg); } catch (e) {}
+            }
+            if (localChannel) {
+                try { localChannel.postMessage(msg); } catch (e) {}
+            }
+        };
+
+        // Support Fire TV / Android TV D-Pad Remote Control (Left, Right, Enter/Select)
+        window.addEventListener("keydown", (e) => {
+            if (e.key === "MediaPlayPause" || e.key === " ") {
+                e.preventDefault();
+                handleTvPlayButtonTap();
+            } else if (e.key === "MediaTrackNext") {
+                sendTvCommand("NEXT");
+            } else if (e.key === "MediaTrackPrevious") {
+                sendTvCommand("PREV");
+            }
+        });
+
+        // Initialize PeerJS Receiver + BroadcastChannel + URL ?code= Auto-Connect
+        function initTvReceiverNetworking() {
+            try {
+                if ("BroadcastChannel" in window) {
+                    localChannel = new BroadcastChannel("muse_local_tv_cast_channel");
+                    localChannel.onmessage = (ev) => handleControllerPacket(ev.data);
+                    localChannel.postMessage({ type: "TV_HELLO", deviceName: "Muse TV Screen" });
+                }
+            } catch (e) {}
+
+            if ("presentation" in navigator && navigator.presentation.receiver) {
+                navigator.presentation.receiver.connectionList.then((list) => {
+                    list.connections.forEach((conn) => {
+                        conn.addEventListener("message", (ev) => {
+                            try { handleControllerPacket(JSON.parse(ev.data)); } catch (e) {}
+                        });
+                    });
+                }).catch(() => {});
+            }
+
+            if (!window.Peer) return;
+            tvPeer = new window.Peer(`${PEER_PREFIX}tv-${tvPin}`, { debug: 0 });
+
+            tvPeer.on("open", () => {
+                document.getElementById("tv-conn-status").innerText = "Cloud Relay Active • Enter code on Phone";
+                const params = new URLSearchParams(window.location.search);
+                const phoneCode = params.get("code");
+                if (phoneCode && /^\d{4}$/.test(phoneCode)) {
+                    const conn = tvPeer.connect(`${PEER_PREFIX}${phoneCode}`, {
+                        reliable: true,
+                        metadata: { deviceName: "Fire TV / Smart TV" }
+                    });
+                    setupPeerConn(conn);
+                }
+            });
+
+            tvPeer.on("connection", (conn) => {
+                setupPeerConn(conn);
+            });
+        }
+
+        function setupPeerConn(conn) {
+            controllerConn = conn;
+            conn.on("open", () => {
+                pairingScreen.classList.add("hidden");
+                conn.send({ type: "TV_HELLO", deviceName: "Fire TV / Smart TV" });
+            });
+            conn.on("data", (data) => handleControllerPacket(data));
+            conn.on("close", () => {
+                pairingScreen.classList.remove("hidden");
+            });
+        }
+
+        window.addEventListener("load", initTvReceiverNetworking);
+    </script>
+</body>
+</html>
