@@ -1,10 +1,12 @@
+
+
 // ============================================================================
-// MUSE PWA OFFLINE-FIRST SERVICE WORKER & STORAGE CONTROLLER (v5.0)
-// Caches HTML, Tailwind UI Engine, FontAwesome Icons, Google Fonts, Artwork,
-// and Worker JSON Feeds so Muse opens and plays 100% offline with zero internet.
+// MUSE PWA OFFLINE-FIRST SERVICE WORKER & STORAGE CONTROLLER (v6.0)
+// Caches index.html, cast.js, tv.html, Tailwind UI, FontAwesome, Google Fonts,
+// PeerJS, Artwork & Worker JSON Feeds for instant startup and 100% offline play.
 // ============================================================================
 
-const SW_VERSION = "v5.0.0";
+const SW_VERSION = "v6.0.0";
 const SHELL_CACHE = `muse-ui-shell-${SW_VERSION}`;
 const CDN_UI_CACHE = `muse-cdn-assets-${SW_VERSION}`;
 const API_DATA_CACHE = `muse-api-json-${SW_VERSION}`;
@@ -17,31 +19,31 @@ const ACTIVE_CACHES = [
   ARTWORK_CACHE
 ];
 
-// Storage Limits (Total Control Over Device Storage)
-const MAX_ARTWORK_ITEMS = 350;
-const MAX_API_JSON_ITEMS = 140;
+const MAX_ARTWORK_ITEMS = 400;
+const MAX_API_JSON_ITEMS = 180;
 
-// Core Same-Origin App Shell
+// Core Same-Origin App Shell (Includes Cast Engine & TV Receiver View)
 const CORE_SHELL_URLS = [
   "./",
   "./index.html",
+  "./cast.js",
+  "./tv.html",
   "./manifest.json",
   "./logo.png"
 ];
 
-// External UI/UX Assets Required so Styling, Fonts & Icons Render 100% Offline
+// External UI/UX & Cast Assets
 const CRITICAL_CDN_UI_URLS = [
   "https://cdn.tailwindcss.com",
+  "https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js",
   "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap",
   "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css",
   "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/webfonts/fa-solid-900.woff2",
   "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/webfonts/fa-regular-400.woff2"
 ];
 
-// Instant Offline SVG Cover Fallback (Used if an uncached cover is requested offline)
-const OFFLINE_SVG_COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#141826"/><stop offset="100%" stop-color="#05060a"/></linearGradient></defs><rect width="500" height="500" fill="url(#g)"/><circle cx="250" cy="250" r="105" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="18"/><circle cx="250" cy="250" r="32" fill="rgba(255,255,255,0.22)"/></svg>`;
+const OFFLINE_SVG_COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#141826"/><stop offset="100%" stop-color="#05060a"/></linearGradient></defs><rect width="500" height="500" fill="url(%23g)"/><circle cx="250" cy="250" r="105" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="18"/><circle cx="250" cy="250" r="32" fill="rgba(255,255,255,0.22)"/></svg>`;
 
-// Helper: Fetch with timeout so offline/weak connections never hang the UI
 async function fetchWithTimeout(request, timeoutMs = 4200) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -52,7 +54,6 @@ async function fetchWithTimeout(request, timeoutMs = 4200) {
   }
 }
 
-// Helper: Enforce storage quota limits per cache bucket (FIFO pruning)
 async function trimCacheQuota(cacheName, maxItems) {
   try {
     const cache = await caches.open(cacheName);
@@ -66,9 +67,7 @@ async function trimCacheQuota(cacheName, maxItems) {
   } catch (e) {}
 }
 
-// ============================================================================
-// 1. INSTALL: Pre-Cache App Shell + External UI CDNs (Tailwind, Fonts, Icons)
-// ============================================================================
+// 1. INSTALL
 self.addEventListener("install", (event) => {
   self.skipWaiting();
 
@@ -88,7 +87,6 @@ self.addEventListener("install", (event) => {
       await Promise.allSettled(
         CRITICAL_CDN_UI_URLS.map(async (url) => {
           try {
-            // Try CORS first, fallback to no-cors for script redirects like cdn.tailwindcss.com
             let res = await fetch(url, { mode: "cors" }).catch(() => null);
             if (!res || (!res.ok && res.type !== "opaque")) {
               res = await fetch(url, { mode: "no-cors" });
@@ -103,9 +101,7 @@ self.addEventListener("install", (event) => {
   );
 });
 
-// ============================================================================
-// 2. ACTIVATE: Purge Old Cache Versions & Claim Clients Immediately
-// ============================================================================
+// 2. ACTIVATE
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
@@ -120,9 +116,7 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// ============================================================================
-// 3. FETCH ROUTER: Offline-First UI Shell, CDN Assets, Artwork & API Fallback
-// ============================================================================
+// 3. FETCH ROUTER
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
@@ -130,9 +124,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   const host = url.hostname.toLowerCase();
 
-  // A. BYPASS LIVE AUDIO STREAMS (/play and non-image /stream)
-  // Native OS hardware media pipeline handles streaming audio directly;
-  // Offline downloaded songs play from IndexedDB blob: URLs in index.html.
+  // A. BYPASS LIVE AUDIO STREAMS
   const isArtworkStream =
     url.pathname.endsWith("/stream") &&
     /\.(jpg|jpeg|png|webp|avif|svg)/i.test(decodeURIComponent(url.search));
@@ -145,13 +137,14 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // B. NAVIGATION & APP SHELL (./, ./index.html, ./manifest.json, ./logo.png)
-  // Instant Stale-While-Revalidate: Opens in < 30ms offline or online, updates in background!
+  // B. SAME-ORIGIN APP SHELL (./, ./index.html, ./cast.js, ./tv.html, ./manifest.json, ./logo.png)
   if (
     req.mode === "navigate" ||
     (url.origin === self.location.origin &&
       (url.pathname.endsWith("/") ||
         url.pathname.endsWith("/index.html") ||
+        url.pathname.endsWith("/cast.js") ||
+        url.pathname.endsWith("/tv.html") ||
         url.pathname.endsWith("/manifest.json") ||
         url.pathname.endsWith("/logo.png")))
   ) {
@@ -159,17 +152,16 @@ self.addEventListener("fetch", (event) => {
       (async () => {
         const cache = await caches.open(SHELL_CACHE);
         const cached =
-          (await cache.match(req)) ||
-          (req.mode === "navigate" ? await cache.match("./index.html") : null) ||
-          (req.mode === "navigate" ? await cache.match("./") : null);
+          (await cache.match(req, { ignoreSearch: true })) ||
+          (req.mode === "navigate" && url.pathname.endsWith("/tv.html")
+            ? await cache.match("./tv.html")
+            : null) ||
+          (req.mode === "navigate" ? await cache.match("./index.html") : null);
 
         const networkFetch = fetchWithTimeout(req, 4000)
           .then((netRes) => {
             if (netRes && netRes.status === 200) {
               cache.put(req, netRes.clone());
-              if (req.mode === "navigate") {
-                cache.put("./index.html", netRes.clone());
-              }
             }
             return netRes;
           })
@@ -195,10 +187,10 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // C. EXTERNAL UI/UX CDNs (Tailwind CSS, Google Fonts, FontAwesome CSS & Webfonts)
-  // Cache-First with Background Refresh so UI styling & icons NEVER break offline!
+  // C. EXTERNAL UI & CAST CDNs
   if (
     host.includes("cdn.tailwindcss.com") ||
+    host.includes("unpkg.com") ||
     host.includes("fonts.googleapis.com") ||
     host.includes("fonts.gstatic.com") ||
     host.includes("cdnjs.cloudflare.com")
@@ -233,7 +225,6 @@ self.addEventListener("fetch", (event) => {
   }
 
   // D. ALBUM & TRACK ARTWORK IMAGES
-  // Cache-First + Quota Trimming + Offline Vector Cover Fallback
   if (
     isArtworkStream ||
     req.destination === "image" ||
@@ -267,8 +258,7 @@ self.addEventListener("fetch", (event) => {
   }
 
   // E. CLOUDFLARE WORKER API JSON (/home, /search, /lyrics, /album, /song, /reco)
-  // Network-First with Fast Timeout -> Cached JSON Fallback -> Instant Offline JSON
-  // Ensures the app opens in 0.5s even in Airplane Mode without hanging on #initial-loader!
+  // Stale-While-Revalidate + Fast Network Fallback for Reduced Server Load
   if (
     host.includes("workers.dev") &&
     ["/home", "/search", "/lyrics", "/album", "/song", "/reco"].some((p) =>
@@ -278,21 +268,26 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       (async () => {
         const cache = await caches.open(API_DATA_CACHE);
-
-        try {
-          const netRes = await fetchWithTimeout(req, 3800);
-          if (netRes && netRes.status === 200) {
-            cache.put(req, netRes.clone());
-            event.waitUntil(trimCacheQuota(API_DATA_CACHE, MAX_API_JSON_ITEMS));
-            return netRes;
-          }
-        } catch (e) {}
-
-        // Offline or Network Timeout: Serve cached JSON for this endpoint
         const cachedExact = await cache.match(req);
-        if (cachedExact) return cachedExact;
 
-        // If no exact match, return a clean instant offline JSON structure so UI never hangs
+        const networkTask = fetchWithTimeout(req, 4200)
+          .then((netRes) => {
+            if (netRes && netRes.status === 200) {
+              cache.put(req, netRes.clone());
+              trimCacheQuota(API_DATA_CACHE, MAX_API_JSON_ITEMS);
+            }
+            return netRes;
+          })
+          .catch(() => null);
+
+        if (cachedExact) {
+          event.waitUntil(networkTask);
+          return cachedExact;
+        }
+
+        const fresh = await networkTask;
+        if (fresh) return fresh;
+
         const fallbackPayload = url.pathname.endsWith("/lyrics")
           ? {
               source: "OfflineCache",
@@ -330,9 +325,7 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-// ============================================================================
-// 4. MESSAGE CONTROLLER: Total Control Over Cache & Storage from Client UI
-// ============================================================================
+// 4. MESSAGE CONTROLLER
 self.addEventListener("message", (event) => {
   const data = event.data || {};
 
@@ -349,31 +342,6 @@ self.addEventListener("message", (event) => {
           event.source.postMessage({
             type: "CACHES_CLEARED",
             status: "ok"
-          });
-        }
-      })()
-    );
-  }
-
-  if (data.type === "GET_STORAGE_STATS") {
-    event.waitUntil(
-      (async () => {
-        let estimate = { usage: 0, quota: 0 };
-        if (navigator.storage && navigator.storage.estimate) {
-          estimate = await navigator.storage.estimate();
-        }
-        const artCache = await caches.open(ARTWORK_CACHE);
-        const apiCache = await caches.open(API_DATA_CACHE);
-        const artKeys = await artCache.keys();
-        const apiKeys = await apiCache.keys();
-
-        if (event.source) {
-          event.source.postMessage({
-            type: "STORAGE_STATS_RESULT",
-            usageBytes: estimate.usage || 0,
-            quotaBytes: estimate.quota || 0,
-            cachedArtworks: artKeys.length,
-            cachedApiFeeds: apiKeys.length
           });
         }
       })()
