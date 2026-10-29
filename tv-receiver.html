@@ -71,7 +71,6 @@
                 inset 0 1px 0 0 rgba(255, 255, 255, 0.14);
         }
 
-        /* Strictly 3 TV Remote D-Pad Controls */
         .tv-btn {
             width: 68px;
             height: 68px;
@@ -84,7 +83,7 @@
             color: #ffffff;
             cursor: pointer;
             outline: none;
-            transition: transform 0.22s var(--spring-smooth), border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+            transition: transform 0.22s var(--spring-smooth), border-color 0.2s ease, box-shadow 0.2s ease;
         }
 
         .tv-btn.tv-play-hero {
@@ -108,11 +107,6 @@
                 0 0 38px var(--theme-bright);
         }
 
-        .tv-btn:active {
-            transform: scale3d(0.94, 0.94, 1);
-        }
-
-        /* Word-by-Word Lyrics Viewport on TV */
         #tv-lyrics-viewport {
             height: 78vh;
             width: 100%;
@@ -124,9 +118,7 @@
             scroll-behavior: smooth;
         }
 
-        #tv-lyrics-viewport::-webkit-scrollbar {
-            display: none;
-        }
+        #tv-lyrics-viewport::-webkit-scrollbar { display: none; }
 
         .tv-lyric-line {
             font-size: clamp(1.55rem, 2.85vw, 2.85rem);
@@ -211,14 +203,15 @@
 <body oncontextmenu="return false;">
     <div id="tv-ambient-bg"></div>
 
-    <audio id="tv-audio" preload="auto" autoplay crossorigin="anonymous"></audio>
+    <audio id="tv-audio" preload="auto" autoplay></audio>
 
-    <!-- Top Brand & Connection Pill -->
+    <!-- Top Brand & Auto-Discovery TV Code Badge -->
     <div class="fixed top-7 left-10 z-40 flex items-center gap-3 pointer-events-none">
-        <div class="tv-glass rounded-full px-4 py-1.5 flex items-center gap-2.5">
-            <span id="tv-conn-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span class="text-xs font-extrabold tracking-widest uppercase text-white/90">MUSE TV</span>
-            <span id="tv-conn-status" class="text-[11px] font-semibold text-white/55 border-l border-white/15 pl-2.5">Ready for Phone Control</span>
+        <div class="tv-glass rounded-full px-4 py-2 flex items-center gap-3">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span class="text-xs font-extrabold tracking-widest uppercase text-white">MUSE TV</span>
+            <span id="tv-conn-status" class="text-xs font-semibold text-white/65 border-l border-white/15 pl-3">Broadcasting on Wi-Fi</span>
+            <span id="tv-pin-badge" class="px-2.5 py-0.5 rounded-full bg-white/15 text-xs font-extrabold tracking-widest text-amber-300">----</span>
         </div>
     </div>
 
@@ -245,10 +238,10 @@
             </div>
 
             <h1 id="tv-title" class="text-2xl lg:text-4xl font-extrabold tracking-tight text-white truncate max-w-md">
-                Muse — Museum of Musics
+                Muse — Ready to Cast
             </h1>
             <p id="tv-artist" class="text-sm lg:text-lg font-semibold text-white/65 truncate max-w-md mt-1.5">
-                Control playback, queue & volume from your phone
+                Tap "Cast to TV" in your phone's 3-dots menu
             </p>
 
             <!-- Strictly 3 Controls on TV: Back, Play/Pause, Next -->
@@ -272,7 +265,7 @@
             <div id="tv-lyrics-viewport">
                 <div id="tv-lyrics-list" class="flex flex-col">
                     <div class="tv-lyric-line is-active line-plain-active">
-                        Waiting for track from your phone...
+                        Open Muse on your phone &rarr; 3-Dots (•••) &rarr; Cast to TV
                     </div>
                 </div>
             </div>
@@ -281,6 +274,10 @@
 
     <script>
         const FALLBACK_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='500' viewBox='0 0 500 500'%3E%3Crect width='500' height='500' fill='%230b0e17'/%3E%3Ccircle cx='250' cy='250' r='110' fill='none' stroke='rgba(255,255,255,0.08)' stroke-width='20'/%3E%3Ccircle cx='250' cy='250' r='32' fill='rgba(255,255,255,0.2)'/%3E%3C/svg%3E";
+        const WSS_BROKERS = [
+            "wss://broker.emqx.io:8084/mqtt",
+            "wss://broker.hivemq.com:8884/mqtt"
+        ];
 
         const tvAudio = document.getElementById("tv-audio");
         const tvCover = document.getElementById("tv-cover");
@@ -288,6 +285,7 @@
         const tvArtist = document.getElementById("tv-artist");
         const tvPlayIcon = document.getElementById("tv-play-icon");
         const tvConnStatus = document.getElementById("tv-conn-status");
+        const tvPinBadge = document.getElementById("tv-pin-badge");
         const tvLyricsViewport = document.getElementById("tv-lyrics-viewport");
         const tvLyricsList = document.getElementById("tv-lyrics-list");
         const tvVolToast = document.getElementById("tv-vol-toast");
@@ -295,47 +293,169 @@
         const tvVolToastText = document.getElementById("tv-vol-toast-text");
         const tvVolIcon = document.getElementById("tv-vol-icon");
 
-        let currentTrackId = null;
+        // Persistent 4-digit TV PIN
+        let tvPin = localStorage.getItem("muse_tv_receiver_pin");
+        if (!tvPin || !/^\d{4}$/.test(tvPin)) {
+            tvPin = String(Math.floor(1000 + Math.random() * 9000));
+            try { localStorage.setItem("muse_tv_receiver_pin", tvPin); } catch (e) {}
+        }
+        tvPinBadge.innerText = `CODE: ${tvPin}`;
+
+        const isFireTV = /AFT|Silk|Amazon/i.test(navigator.userAgent);
+        const tvDeviceName = isFireTV ? `Amazon Fire TV (#${tvPin})` : `Smart TV Receiver (#${tvPin})`;
+
         let lyricsTimeline = [];
         let activeLineIdx = -1;
         let volToastTimer = null;
         let activeConnections = [];
-        let wifiRoomId = null;
-
-        // Web Audio API GainNode for dynamic hardware-like TV volume boost/attenuation from phone
-        let audioCtx = null;
-        let gainNode = null;
-
-        function ensureGainPipeline() {
-            if (audioCtx) {
-                if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
-                return;
-            }
-            try {
-                const Ctx = window.AudioContext || window.webkitAudioContext;
-                if (!Ctx) return;
-                audioCtx = new Ctx();
-                const source = audioCtx.createMediaElementSource(tvAudio);
-                gainNode = audioCtx.createGain();
-                gainNode.gain.value = tvAudio.volume || 0.85;
-                source.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-            } catch (e) {}
-        }
+        let wifiTopicBase = null;
+        let mqttClient = null;
 
         const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("muse_tv_cast_channel_v1") : null;
+
+        // Lightweight MQTT-over-WSS Client for <25ms Phone <-> TV Sync
+        class TvRealtimeWssBus {
+            constructor(onMessageCallback) {
+                this.ws = null;
+                this.connected = false;
+                this.brokerIdx = 0;
+                this.onMessage = onMessageCallback;
+                this.subscriptions = new Set();
+                this.pingTimer = null;
+                this.clientId = "muse_tv_" + tvPin + "_" + Math.random().toString(36).slice(2, 7);
+            }
+
+            connect() {
+                const url = WSS_BROKERS[this.brokerIdx % WSS_BROKERS.length];
+                try {
+                    this.ws = new WebSocket(url, "mqtt");
+                    this.ws.binaryType = "arraybuffer";
+                    this.ws.onopen = () => this._sendConnect();
+                    this.ws.onmessage = (ev) => this._onFrame(new Uint8Array(ev.data));
+                    this.ws.onclose = () => {
+                        this.connected = false;
+                        if (this.pingTimer) clearInterval(this.pingTimer);
+                        this.brokerIdx++;
+                        setTimeout(() => this.connect(), 2500);
+                    };
+                } catch (e) {}
+            }
+
+            _encodeLen(len) {
+                const out = [];
+                do {
+                    let b = len % 128;
+                    len = Math.floor(len / 128);
+                    if (len > 0) b |= 128;
+                    out.push(b);
+                } while (len > 0);
+                return out;
+            }
+
+            _encodeStr(s) {
+                const b = new TextEncoder().encode(s);
+                return [(b.length >> 8) & 0xff, b.length & 0xff, ...b];
+            }
+
+            _sendConnect() {
+                const p = [0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x04, 0x02, 0x00, 0x3c, ...this._encodeStr(this.clientId)];
+                this.ws.send(new Uint8Array([0x10, ...this._encodeLen(p.length), ...p]));
+            }
+
+            subscribe(topic) {
+                this.subscriptions.add(topic);
+                if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) return;
+                const body = [0x00, 0x01, ...this._encodeStr(topic), 0x00];
+                try { this.ws.send(new Uint8Array([0x82, ...this._encodeLen(body.length), ...body])); } catch (e) {}
+            }
+
+            publish(topic, obj) {
+                if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) return;
+                const jb = new TextEncoder().encode(JSON.stringify(obj));
+                const tb = this._encodeStr(topic);
+                const head = [0x30, ...this._encodeLen(tb.length + jb.length), ...tb];
+                const pkt = new Uint8Array(head.length + jb.length);
+                pkt.set(head, 0);
+                pkt.set(jb, head.length);
+                try { this.ws.send(pkt); } catch (e) {}
+            }
+
+            _onFrame(buf) {
+                if (!buf || buf.length < 2) return;
+                const type = buf[0] & 0xf0;
+                if (type === 0x20) {
+                    this.connected = true;
+                    this.subscriptions.forEach((t) => this.subscribe(t));
+                    announcePresenceOnWifi();
+                    if (this.pingTimer) clearInterval(this.pingTimer);
+                    this.pingTimer = setInterval(() => {
+                        if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
+                            try { this.ws.send(new Uint8Array([0xc0, 0x00])); } catch (e) {}
+                        }
+                    }, 25000);
+                    return;
+                }
+                if (type === 0x30) {
+                    let mult = 1, remLen = 0, idx = 1, b;
+                    do {
+                        if (idx >= buf.length) return;
+                        b = buf[idx++];
+                        remLen += (b & 127) * mult;
+                        mult *= 128;
+                    } while ((b & 128) !== 0);
+                    const tLen = (buf[idx] << 8) | buf[idx + 1];
+                    idx += 2 + tLen;
+                    const str = new TextDecoder().decode(buf.subarray(idx, idx + (remLen - 2 - tLen)));
+                    try {
+                        const data = JSON.parse(str);
+                        if (this.onMessage) this.onMessage(data);
+                    } catch (e) {}
+                }
+            }
+        }
 
         function sendToController(payload) {
             const str = JSON.stringify(payload);
             activeConnections.forEach((conn) => {
-                try {
-                    if (conn.state === "connected") conn.send(str);
-                } catch (e) {}
+                try { if (conn.state === "connected") conn.send(str); } catch (e) {}
             });
             if (bc) {
                 try { bc.postMessage(payload); } catch (e) {}
             }
+            if (mqttClient && mqttClient.connected) {
+                mqttClient.publish(`muse/tv/pin/${tvPin}/tv`, payload);
+                if (wifiTopicBase) {
+                    mqttClient.publish(`${wifiTopicBase}/tv`, payload);
+                }
+            }
         }
+
+        function announcePresenceOnWifi() {
+            sendToController({
+                type: "TV_ANNOUNCE_ALIVE",
+                pin: tvPin,
+                deviceName: tvDeviceName
+            });
+        }
+
+        // Initialize WSS Discovery & Pin Subscription
+        mqttClient = new TvRealtimeWssBus((msg) => handleControllerMessage(msg));
+        mqttClient.connect();
+        mqttClient.subscribe(`muse/tv/pin/${tvPin}/ctrl`);
+
+        fetch("https://api.ipify.org?format=json")
+            .then((r) => r.json())
+            .then((d) => {
+                if (d && d.ip) {
+                    wifiTopicBase = "muse/tv/wifi/" + d.ip.replace(/[^a-zA-Z0-9]/g, "_");
+                    mqttClient.subscribe(`${wifiTopicBase}/ctrl`);
+                    announcePresenceOnWifi();
+                }
+            })
+            .catch(() => {});
+
+        // Broadcast presence every 2.5s so Phone Scanner sees this TV immediately
+        setInterval(announcePresenceOnWifi, 2500);
 
         function applyTVTheme(rgb) {
             if (!rgb) return;
@@ -371,9 +491,6 @@
             const clamped = Math.max(0, Math.min(1, Number(vol) || 0));
             tvAudio.muted = Boolean(muted);
             tvAudio.volume = clamped;
-            if (gainNode) {
-                gainNode.gain.value = muted ? 0 : clamped;
-            }
             showVolumeToast(clamped, muted);
         }
 
@@ -500,10 +617,15 @@
 
         function handleControllerMessage(msg) {
             if (!msg || typeof msg !== "object") return;
-            tvConnStatus.innerText = "Connected to Phone Controller";
+
+            if (msg.type === "DISCOVER_PING") {
+                announcePresenceOnWifi();
+                return;
+            }
+
+            tvConnStatus.innerText = "Connected to Phone";
 
             if (msg.type === "LOAD_TRACK" && msg.track) {
-                currentTrackId = msg.track.id;
                 tvTitle.innerText = msg.track.title || "Muse";
                 tvArtist.innerText = msg.track.artist || "";
                 tvCover.src = msg.track.coverUrl || FALLBACK_SVG;
@@ -514,7 +636,6 @@
                     applyDynamicVolume(msg.volume, false);
                 }
                 if (msg.track.streamUrl) {
-                    ensureGainPipeline();
                     tvAudio.src = msg.track.streamUrl;
                     tvAudio.currentTime = Number(msg.startTime) || 0;
                     tvAudio.play().catch(() => {});
@@ -525,7 +646,6 @@
                     renderTVLyrics(msg.lyricsTimeline);
                 }
             } else if (msg.type === "PLAY") {
-                ensureGainPipeline();
                 tvAudio.play().catch(() => {});
             } else if (msg.type === "PAUSE") {
                 tvAudio.pause();
@@ -535,68 +655,46 @@
                 applyDynamicVolume(msg.volume, msg.muted);
             } else if (msg.type === "TERMINATE") {
                 tvAudio.pause();
-                window.close();
             }
         }
 
-        // 1. W3C Presentation API Receiver
         if (navigator.presentation && navigator.presentation.receiver) {
             navigator.presentation.receiver.connectionList.then((list) => {
                 const bindConn = (conn) => {
                     activeConnections.push(conn);
-                    tvConnStatus.innerText = "Connected via Presentation API";
+                    tvConnStatus.innerText = "Connected via Presentation";
                     conn.onmessage = (ev) => {
                         try {
                             handleControllerMessage(typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data);
                         } catch (e) {}
                     };
-                    sendToController({ type: "TV_READY" });
+                    sendToController({ type: "TV_READY", pin: tvPin, deviceName: tvDeviceName });
                 };
                 list.connections.forEach(bindConn);
                 list.onconnectionavailable = (ev) => bindConn(ev.connection);
             }).catch(() => {});
         }
 
-        // 2. Local BroadcastChannel Receiver
         if (bc) {
             bc.onmessage = (ev) => handleControllerMessage(ev.data);
-            sendToController({ type: "TV_READY" });
         }
-
-        // 3. Automatic Same-Wi-Fi Cloud Relay (Zero-Config Pairing over same Wi-Fi IP)
-        (async function subscribeSameWifiRelay() {
-            try {
-                const res = await fetch("https://api.ipify.org?format=json");
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data && data.ip) {
-                        wifiRoomId = "muse_wifi_" + data.ip.replace(/[^a-zA-Z0-9]/g, "_");
-                        const es = new EventSource(`https://ntfy.sh/${wifiRoomId}/sse`);
-                        es.onmessage = (ev) => {
-                            try {
-                                const wrapper = JSON.parse(ev.data);
-                                if (wrapper && wrapper.message) {
-                                    const payload = JSON.parse(wrapper.message);
-                                    handleControllerMessage(payload);
-                                }
-                            } catch (e) {}
-                        };
-                    }
-                }
-            } catch (e) {}
-        })();
 
         tvCover.onerror = () => {
             if (tvCover.src !== FALLBACK_SVG) tvCover.src = FALLBACK_SVG;
         };
 
+        let lastSentSec = -1;
         tvAudio.addEventListener("timeupdate", () => {
-            sendToController({
-                type: "TV_TIME_UPDATE",
-                currentTime: tvAudio.currentTime || 0,
-                duration: tvAudio.duration || 0,
-                isPlaying: !tvAudio.paused
-            });
+            const cur = tvAudio.currentTime || 0;
+            if (Math.abs(cur - lastSentSec) >= 0.5) {
+                lastSentSec = cur;
+                sendToController({
+                    type: "TV_TIME_UPDATE",
+                    currentTime: cur,
+                    duration: tvAudio.duration || 0,
+                    isPlaying: !tvAudio.paused
+                });
+            }
         });
 
         tvAudio.addEventListener("play", () => {
@@ -613,7 +711,7 @@
             sendToController({ type: "TV_TRACK_ENDED" });
         });
 
-        // 4. Strictly 3 TV Controls + TV Remote D-Pad Navigation
+        // Strictly 3 TV Controls + TV Remote D-Pad Navigation
         const btns = [
             document.getElementById("tv-btn-prev"),
             document.getElementById("tv-btn-play"),
@@ -629,7 +727,6 @@
 
         btns[0].onclick = () => sendToController({ type: "TV_COMMAND", action: "PREV" });
         btns[1].onclick = () => {
-            ensureGainPipeline();
             if (tvAudio.src) {
                 if (tvAudio.paused) tvAudio.play().catch(() => {});
                 else tvAudio.pause();
@@ -660,11 +757,6 @@
                 btns[0]?.click();
             }
         });
-
-        // Lock TV view at 100% zoom
-        document.addEventListener("wheel", (e) => {
-            if (e.ctrlKey || e.metaKey) e.preventDefault();
-        }, { passive: false });
     </script>
 </body>
 </html>
