@@ -7645,78 +7645,50 @@
         const m = Math.floor(seconds / 60), s = Math.floor(seconds % 60);
         return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
-
-    // Expose hooks for cast-engine.js
-    window.MusePlayerBridge = {
-        getAudioElement: () => audio,
-        getActiveTrack: () => activeTrack,
-        getActiveLyricsPayload: () => activeLyricsPayload,
-        getLyricsTimeline: () => activeLyricsTimeline,
-        getThemeRGB: () => currentThemeRGB,
-        getStreamUrlForTrack: (t) => {
-            const cands = getImmediateCandidatesForTrack(t || activeTrack).filter(u => !u.startsWith("blob:"));
-            return cands[0] || (t || activeTrack)?.streamUrl || (t || activeTrack)?.playUrl || "";
-        },
-        onRemoteTimeUpdate: (currentTime, duration) => {
-            if (!isDraggingSlider && duration > 0) {
-                const pct = Math.min(100, Math.max(0, (currentTime / duration) * 100));
-                fullProgress.value = pct;
-                fullProgress.style.setProperty('--progress', `${pct}%`);
-                miniProgressBar.style.setProperty('--progress', `${pct}%`);
-                currTimeEl.innerText = formatMinutes(currentTime);
-                remTimeEl.innerText = "-" + formatMinutes(Math.max(0, duration - currentTime));
-            }
-            if (isPlayerOpen && isLyricsOpen && activeLyricsTimeline.length > 0) {
-                syncLyricsToCurrentTime(false);
-            }
-        },
-        onRemoteEnded: () => handleTrackEnded(),
-        onRemoteStateChange: (playing) => {
-            userIntendedPlaying = playing;
-            setPlaybackState(playing, true);
-        },
-        playNext: () => playNextTrack(isPlayerOpen),
-        playPrev: () => playPrevTrack(isPlayerOpen),
-        togglePlayPause: () => togglePlayPause(),
-        closeMoreMenu: () => closeFullMoreMenu(),
-        toast: (msg, type) => toast(msg, type)
-    };
-
-    // ====================================================================
-    // STRICT 100% ZOOM LOCK & ANTI-SCALING ENFORCEMENT
-    // Prevents pinch-zoom, double-tap zoom, ctrl+wheel zoom, and keyboard zoom
-    // ====================================================================
-    document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
-    document.addEventListener('gesturechange', (e) => e.preventDefault(), { passive: false });
-    document.addEventListener('gestureend', (e) => e.preventDefault(), { passive: false });
-
-    document.addEventListener('touchmove', (e) => {
-        if (e.touches && e.touches.length > 1) {
-            e.preventDefault();
-        }
-    }, { passive: false });
-
-    document.addEventListener('wheel', (e) => {
-        if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-        }
-    }, { passive: false });
-
-    window.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && ['+', '-', '=', '0', ' numpadadd', 'numpadsubtract'].includes(e.key.toLowerCase())) {
-            e.preventDefault();
-            return;
-        }
-        if (e.code === 'Space' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) {
-            e.preventDefault();
-            togglePlayPause();
-        } else if (e.code === 'Escape' && isPlayerOpen) {
-            if (isLyricsOpen) {
-                setLyricsPanelState(false);
-            } else {
-                closeFullscreenPlayer();
-            }
-        }
-    }, { passive: false });
-</script>
-<script src="./cast-engine.js" defer></script>
+        // Bridge connecting index.html audio & lyrics to cast-engine.js
+        window.MusePlayerBridge = {
+            getAudioElement: () => document.getElementById('audio-engine'),
+            getActiveTrack: () => (typeof activeTrack !== 'undefined' ? activeTrack : null),
+            getActiveLyricsPayload: () => (typeof activeLyricsPayload !== 'undefined' ? activeLyricsPayload : null),
+            getLyricsTimeline: () => (typeof activeLyricsTimeline !== 'undefined' ? activeLyricsTimeline : []),
+            getThemeRGB: () => (typeof currentThemeRGB !== 'undefined' ? currentThemeRGB : { r: 98, g: 120, b: 235 }),
+            getStreamUrlForTrack: (t) => {
+                const target = t || (typeof activeTrack !== 'undefined' ? activeTrack : null);
+                if (!target) return "";
+                if (typeof getImmediateCandidatesForTrack === 'function') {
+                    const cands = getImmediateCandidatesForTrack(target).filter(u => !String(u).startsWith("blob:"));
+                    if (cands[0]) return cands[0];
+                }
+                return target.streamUrl || target.playUrl || "";
+            },
+            onRemoteTimeUpdate: (currentTime, duration) => {
+                if (typeof isDraggingSlider !== 'undefined' && !isDraggingSlider && duration > 0) {
+                    const pct = Math.min(100, Math.max(0, (currentTime / duration) * 100));
+                    const fp = document.getElementById('full-progress');
+                    const mp = document.getElementById('mini-player-progress-bar');
+                    const ct = document.getElementById('full-current-time');
+                    const rt = document.getElementById('full-remaining-time');
+                    if (fp) { fp.value = pct; fp.style.setProperty('--progress', `${pct}%`); }
+                    if (mp) mp.style.setProperty('--progress', `${pct}%`);
+                    if (ct && typeof formatMinutes === 'function') ct.innerText = formatMinutes(currentTime);
+                    if (rt && typeof formatMinutes === 'function') rt.innerText = "-" + formatMinutes(Math.max(0, duration - currentTime));
+                }
+                if (typeof syncLyricsToCurrentTime === 'function') {
+                    syncLyricsToCurrentTime(false);
+                }
+            },
+            onRemoteEnded: () => { if (typeof handleTrackEnded === 'function') handleTrackEnded(); },
+            onRemoteStateChange: (playing) => {
+                if (typeof userIntendedPlaying !== 'undefined') userIntendedPlaying = playing;
+                if (typeof setPlaybackState === 'function') setPlaybackState(playing, true);
+            },
+            playNext: () => { if (typeof playNextTrack === 'function') playNextTrack(true); },
+            playPrev: () => { if (typeof playPrevTrack === 'function') playPrevTrack(true); },
+            togglePlayPause: () => { if (typeof togglePlayPause === 'function') togglePlayPause(); },
+            closeMoreMenu: () => { if (typeof closeFullMoreMenu === 'function') closeFullMoreMenu(); },
+            toast: (msg, type) => { if (typeof toast === 'function') toast(msg, type); }
+        };
+    </script>
+    <script src="./cast-engine.js?v=5.0"></script>
+</body>
+</html>
