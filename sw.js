@@ -1,9 +1,10 @@
 
 
 // ============================================================================
-// MUSE PWA OFFLINE-FIRST SERVICE WORKER & STORAGE CONTROLLER (v6.0)
-// Caches index.html, cast.js, tv.html, Tailwind UI, FontAwesome, Google Fonts,
-// PeerJS, Artwork & Worker JSON Feeds for instant startup and 100% offline play.
+// FILE: sw.js
+// MUSE PWA OFFLINE-FIRST SERVICE WORKER & STORAGE CONTROLLER (v6.0.0)
+// Caches App Shell, Cast Engine, TV Receiver, Tailwind UI, FontAwesome,
+// Artwork, and Worker JSON Feeds with Request Deduplication.
 // ============================================================================
 
 const SW_VERSION = "v6.0.0";
@@ -22,36 +23,44 @@ const ACTIVE_CACHES = [
 const MAX_ARTWORK_ITEMS = 400;
 const MAX_API_JSON_ITEMS = 180;
 
-// Core Same-Origin App Shell (Includes Cast Engine & TV Receiver View)
 const CORE_SHELL_URLS = [
   "./",
   "./index.html",
-  "./cast.js",
-  "./tv.html",
+  "./cast-engine.js",
+  "./tv-receiver.html",
   "./manifest.json",
   "./logo.png"
 ];
 
-// External UI/UX & Cast Assets
 const CRITICAL_CDN_UI_URLS = [
   "https://cdn.tailwindcss.com",
-  "https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js",
   "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap",
   "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css",
   "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/webfonts/fa-solid-900.woff2",
   "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/webfonts/fa-regular-400.woff2"
 ];
 
-const OFFLINE_SVG_COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#141826"/><stop offset="100%" stop-color="#05060a"/></linearGradient></defs><rect width="500" height="500" fill="url(%23g)"/><circle cx="250" cy="250" r="105" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="18"/><circle cx="250" cy="250" r="32" fill="rgba(255,255,255,0.22)"/></svg>`;
+const OFFLINE_SVG_COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#141826"/><stop offset="100%" stop-color="#05060a"/></linearGradient></defs><rect width="500" height="500" fill="url(#g)"/><circle cx="250" cy="250" r="105" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="18"/><circle cx="250" cy="250" r="32" fill="rgba(255,255,255,0.22)"/></svg>`;
+
+const inflightNetworkMap = new Map();
 
 async function fetchWithTimeout(request, timeoutMs = 4200) {
+  const key = request.url;
+  if (inflightNetworkMap.has(key)) {
+    return inflightNetworkMap.get(key).then((r) => r.clone());
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(request, { signal: controller.signal });
-  } finally {
+
+  const p = fetch(request, { signal: controller.signal }).finally(() => {
     clearTimeout(timer);
-  }
+    inflightNetworkMap.delete(key);
+  });
+
+  inflightNetworkMap.set(key, p);
+  const res = await p;
+  return res.clone();
 }
 
 async function trimCacheQuota(cacheName, maxItems) {
@@ -67,7 +76,6 @@ async function trimCacheQuota(cacheName, maxItems) {
   } catch (e) {}
 }
 
-// 1. INSTALL
 self.addEventListener("install", (event) => {
   self.skipWaiting();
 
@@ -101,7 +109,6 @@ self.addEventListener("install", (event) => {
   );
 });
 
-// 2. ACTIVATE
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
@@ -116,7 +123,6 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// 3. FETCH ROUTER
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
@@ -124,7 +130,6 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   const host = url.hostname.toLowerCase();
 
-  // A. BYPASS LIVE AUDIO STREAMS
   const isArtworkStream =
     url.pathname.endsWith("/stream") &&
     /\.(jpg|jpeg|png|webp|avif|svg)/i.test(decodeURIComponent(url.search));
@@ -137,14 +142,14 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // B. SAME-ORIGIN APP SHELL (./, ./index.html, ./cast.js, ./tv.html, ./manifest.json, ./logo.png)
+  // App Shell & Cast Scripts (Stale-While-Revalidate)
   if (
     req.mode === "navigate" ||
     (url.origin === self.location.origin &&
       (url.pathname.endsWith("/") ||
         url.pathname.endsWith("/index.html") ||
-        url.pathname.endsWith("/cast.js") ||
-        url.pathname.endsWith("/tv.html") ||
+        url.pathname.endsWith("/cast-engine.js") ||
+        url.pathname.endsWith("/tv-receiver.html") ||
         url.pathname.endsWith("/manifest.json") ||
         url.pathname.endsWith("/logo.png")))
   ) {
@@ -152,16 +157,16 @@ self.addEventListener("fetch", (event) => {
       (async () => {
         const cache = await caches.open(SHELL_CACHE);
         const cached =
-          (await cache.match(req, { ignoreSearch: true })) ||
-          (req.mode === "navigate" && url.pathname.endsWith("/tv.html")
-            ? await cache.match("./tv.html")
-            : null) ||
+          (await cache.match(req)) ||
           (req.mode === "navigate" ? await cache.match("./index.html") : null);
 
         const networkFetch = fetchWithTimeout(req, 4000)
           .then((netRes) => {
             if (netRes && netRes.status === 200) {
               cache.put(req, netRes.clone());
+              if (req.mode === "navigate") {
+                cache.put("./index.html", netRes.clone());
+              }
             }
             return netRes;
           })
@@ -177,7 +182,7 @@ self.addEventListener("fetch", (event) => {
 
         return (
           (await cache.match("./index.html")) ||
-          new Response("Muse Offline — Please connect once to initialize UI.", {
+          new Response("Muse Offline", {
             status: 503,
             headers: { "Content-Type": "text/plain" }
           })
@@ -187,10 +192,9 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // C. EXTERNAL UI & CAST CDNs
+  // External UI CDNs
   if (
     host.includes("cdn.tailwindcss.com") ||
-    host.includes("unpkg.com") ||
     host.includes("fonts.googleapis.com") ||
     host.includes("fonts.gstatic.com") ||
     host.includes("cdnjs.cloudflare.com")
@@ -198,8 +202,7 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       (async () => {
         const cache = await caches.open(CDN_UI_CACHE);
-        const cached =
-          (await cache.match(req)) || (await cache.match(req.url));
+        const cached = (await cache.match(req)) || (await cache.match(req.url));
 
         const updateTask = fetch(req)
           .then((netRes) => {
@@ -216,15 +219,13 @@ self.addEventListener("fetch", (event) => {
         }
 
         const netRes = await updateTask;
-        if (netRes) return netRes;
-
-        return new Response("", { status: 200 });
+        return netRes || new Response("", { status: 200 });
       })()
     );
     return;
   }
 
-  // D. ALBUM & TRACK ARTWORK IMAGES
+  // Artwork Images (Cache-First to reduce server calls)
   if (
     isArtworkStream ||
     req.destination === "image" ||
@@ -257,8 +258,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // E. CLOUDFLARE WORKER API JSON (/home, /search, /lyrics, /album, /song, /reco)
-  // Stale-While-Revalidate + Fast Network Fallback for Reduced Server Load
+  // Worker API JSON Feeds (Stale-While-Revalidate for /home, /lyrics, /album, /song to cut server calls)
   if (
     host.includes("workers.dev") &&
     ["/home", "/search", "/lyrics", "/album", "/song", "/reco"].some((p) =>
@@ -270,7 +270,7 @@ self.addEventListener("fetch", (event) => {
         const cache = await caches.open(API_DATA_CACHE);
         const cachedExact = await cache.match(req);
 
-        const networkTask = fetchWithTimeout(req, 4200)
+        const networkTask = fetchWithTimeout(req, 3800)
           .then((netRes) => {
             if (netRes && netRes.status === 200) {
               cache.put(req, netRes.clone());
@@ -319,31 +319,6 @@ self.addEventListener("fetch", (event) => {
             "X-Cache-Status": "OFFLINE-FALLBACK"
           }
         });
-      })()
-    );
-    return;
-  }
-});
-
-// 4. MESSAGE CONTROLLER
-self.addEventListener("message", (event) => {
-  const data = event.data || {};
-
-  if (data.type === "SKIP_WAITING") {
-    self.skipWaiting();
-  }
-
-  if (data.type === "CLEAR_RUNTIME_CACHES") {
-    event.waitUntil(
-      (async () => {
-        await caches.delete(API_DATA_CACHE);
-        await caches.delete(ARTWORK_CACHE);
-        if (event.source) {
-          event.source.postMessage({
-            type: "CACHES_CLEARED",
-            status: "ok"
-          });
-        }
       })()
     );
   }
