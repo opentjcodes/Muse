@@ -1,4 +1,4 @@
-name: Cloud Build APK (No PC)
+name: Cloud Build Native Muse APK (No PC)
 
 on:
   push:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 1. Checkout Your Web Files
+      - name: 1. Checkout Repository Files
         uses: actions/checkout@v4
 
-      - name: 2. Set up Node.js & Java 21
+      - name: 2. Set up Node.js 22 & Java 21
         uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -22,30 +22,1131 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      - name: 3. Bundle Web Files & Initialize Capacitor in Cloud
+      - name: 3. Bundle Web App, Offline Assets & Native JS Bridge
         run: |
-          mkdir www
-          find . -maxdepth 1 -not -name 'www' -not -name '.*' -exec cp -r {} www/ \;
-          
+          mkdir -p www
+          cp -r index.html sw.js manifest.json logo.png www/
+
+          # Pre-bundle Tailwind CDN locally so cold-boot in Airplane Mode is 100% styled
+          curl -L -s "https://cdn.tailwindcss.com" -o www/tailwind-offline.js || true
+
+          # Create the automatic Web-to-Native Android Bridge script
+          cat << 'EOF' > www/native-bridge.js
+          (function () {
+            if (window.__museNativeBridgeInitialized) return;
+            window.__museNativeBridgeInitialized = true;
+
+            const isNativeAndroid = () => typeof window.MuseNative !== "undefined";
+
+            // 1. Sync HTML5 Audio & Track Metadata to Native Android Foreground Service & Lockscreen
+            function syncToNativeService() {
+              if (!isNativeAndroid()) return;
+              const audioEl = document.getElementById("audio-engine");
+              const track = typeof activeTrack !== "undefined" ? activeTrack : null;
+              if (!audioEl || !track) return;
+
+              const title = String(track.title || "Muse");
+              const artist = String(track.artist || "Museum of Musics");
+              const album = String(track.album || "Muse");
+              const cover = String(track.coverUrl || "");
+              const isPlaying = !audioEl.paused && !audioEl.ended;
+              const durationMs = Math.max(0, Math.round((audioEl.duration || track.duration || 0) * 1000));
+              const positionMs = Math.max(0, Math.round((audioEl.currentTime || 0) * 1000));
+
+              try {
+                window.MuseNative.updateMediaState(
+                  title,
+                  artist,
+                  album,
+                  cover,
+                  isPlaying,
+                  durationMs,
+                  positionMs
+                );
+              } catch (e) {}
+            }
+
+            // 2. Receive Commands from Android Lockscreen, Notification Shade & Bluetooth Headsets
+            window.__museNativeCommand = function (cmd, valueMs) {
+              const audioEl = document.getElementById("audio-engine");
+              if (!audioEl) return;
+
+              switch (cmd) {
+                case "play":
+                  if (audioEl.paused && typeof window.togglePlayPause === "function") {
+                    window.togglePlayPause();
+                  }
+                  break;
+                case "pause":
+                  if (!audioEl.paused && typeof window.togglePlayPause === "function") {
+                    window.togglePlayPause();
+                  }
+                  break;
+                case "toggle":
+                  if (typeof window.togglePlayPause === "function") {
+                    window.togglePlayPause();
+                  }
+                  break;
+                case "next":
+                  if (typeof window.playNextTrack === "function") {
+                    window.playNextTrack(false);
+                  }
+                  break;
+                case "prev":
+                  if (typeof window.playPrevTrack === "function") {
+                    window.playPrevTrack(false);
+                  }
+                  break;
+                case "seek":
+                  if (typeof valueMs === "number" && audioEl.duration) {
+                    audioEl.currentTime = Math.max(0, Math.min(audioEl.duration, valueMs / 1000));
+                    syncToNativeService();
+                  }
+                  break;
+              }
+            };
+
+            // 3. Hardware Android Back Button Handler (Closes modals/player instead of killing app)
+            window.__museHandleBackButton = function () {
+              const modals = [
+                { id: "song-action-modal", close: window.closeSongActionModal },
+                { id: "playlist-action-modal", close: window.closePlaylistActionModal },
+                { id: "import-link-modal", close: window.closeImportLinkModal },
+                { id: "settings-modal", close: window.closeSettingsModal },
+                { id: "playlist-modal", close: window.closePlaylistModal },
+                { id: "add-to-playlist-modal", close: window.closeAddToPlaylistModal }
+              ];
+
+              for (const m of modals) {
+                const el = document.getElementById(m.id);
+                if (el && !el.classList.contains("hidden")) {
+                  if (typeof m.close === "function") m.close();
+                  return "handled";
+                }
+              }
+
+              if (typeof isPlayerOpen !== "undefined" && isPlayerOpen) {
+                if (typeof isLyricsOpen !== "undefined" && isLyricsOpen && typeof window.setLyricsPanelState === "function") {
+                  window.setLyricsPanelState(false);
+                  return "handled";
+                }
+                if (typeof window.closeFullscreenPlayer === "function") {
+                  window.closeFullscreenPlayer();
+                  return "handled";
+                }
+              }
+
+              if (typeof activeTab !== "undefined" && activeTab !== "home") {
+                if (typeof window.handleHeaderBackTap === "function" && (activeTab === "playlist-songs" || activeTab === "collection")) {
+                  window.handleHeaderBackTap();
+                } else if (typeof window.switchTab === "function") {
+                  window.switchTab("home");
+                }
+                return "handled";
+              }
+
+              return "minimize";
+            };
+
+            // 4. Intercept Blob File Exports (.m4a Audio & .json Backups) so they save to Android Downloads/Muse
+            const origCreateElement = document.createElement.bind(document);
+            document.createElement = function (tagName, options) {
+              const el = origCreateElement(tagName, options);
+              if (String(tagName).toLowerCase() === "a" && isNativeAndroid()) {
+                const origClick = el.click.bind(el);
+                el.click = function () {
+                  if (el.download && el.href && el.href.startsWith("blob:")) {
+                    const fileName = el.download;
+                    fetch(el.href)
+                      .then((r) => r.blob())
+                      .then((blob) => {
+                        const reader = new FileReader();
+                        reader.onloadend = function () {
+                          const base64 = String(reader.result || "").split(",")[1] || "";
+                          if (base64) {
+                            window.MuseNative.saveBase64FileToDownloads(
+                              base64,
+                              fileName,
+                              blob.type || "application/octet-stream"
+                            );
+                          }
+                        };
+                        reader.readAsDataURL(blob);
+                      })
+                      .catch(() => origClick());
+                    return;
+                  }
+                  return origClick();
+                };
+              }
+              return el;
+            };
+
+            // 5. Upgrade navigator.vibrate to use crisp Native Android Haptics
+            if (isNativeAndroid()) {
+              navigator.vibrate = function (pattern) {
+                const ms = Array.isArray(pattern) ? pattern[0] : Number(pattern) || 15;
+                try {
+                  window.MuseNative.triggerHaptic(ms);
+                } catch (e) {}
+                return true;
+              };
+            }
+
+            // 6. Attach Audio Engine Listeners & Fast Offline Boot
+            window.addEventListener("DOMContentLoaded", () => {
+              const audioEl = document.getElementById("audio-engine");
+              if (!audioEl) return;
+
+              let lastSyncSec = -1;
+              ["play", "playing", "pause", "loadedmetadata", "seeked", "ended"].forEach((ev) => {
+                audioEl.addEventListener(ev, () => {
+                  setTimeout(syncToNativeService, 40);
+                });
+              });
+
+              audioEl.addEventListener("timeupdate", () => {
+                const sec = Math.floor(audioEl.currentTime || 0);
+                if (Math.abs(sec - lastSyncSec) >= 3) {
+                  lastSyncSec = sec;
+                  syncToNativeService();
+                }
+              });
+
+              // Request unrestricted background battery exemption once on first playback
+              let askedBatteryOpt = localStorage.getItem("muse_native_battery_prompted") === "1";
+              audioEl.addEventListener("playing", () => {
+                if (!askedBatteryOpt && isNativeAndroid()) {
+                  askedBatteryOpt = true;
+                  localStorage.setItem("muse_native_battery_prompted", "1");
+                  try {
+                    window.MuseNative.requestUnrestrictedBattery();
+                  } catch (e) {}
+                }
+              }, { once: true });
+
+              // If launched 100% offline in Airplane Mode, dismiss loader immediately to show Offline Downloads
+              if (!navigator.onLine) {
+                setTimeout(() => {
+                  const loader = document.getElementById("initial-loader");
+                  if (loader) {
+                    loader.style.transform = "translate3d(0, -100%, 0)";
+                    loader.style.opacity = "0";
+                    setTimeout(() => loader.remove(), 400);
+                  }
+                }, 650);
+              }
+            });
+          })();
+          EOF
+
+          # Inject offline Tailwind fallback + native-bridge.js into www/index.html
+          sed -i 's|<script src="https://cdn.tailwindcss.com"></script>|<script src="https://cdn.tailwindcss.com" onerror="this.onerror=null;this.src='\''./tailwind-offline.js'\''"></script>\n    <script src="./native-bridge.js"></script>|' www/index.html
+
+      - name: 4. Initialize Capacitor 6 & Android Platform
+        run: |
           npm init -y
-          npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap init "Muse" "com.muse.mywebapp" --web-dir www
+          npm install @capacitor/core@^6.0.0 @capacitor/cli@^6.0.0 @capacitor/android@^6.0.0 sharp
+
+          cat << 'EOF' > capacitor.config.json
+          {
+            "appId": "com.muse.mywebapp",
+            "appName": "Muse",
+            "webDir": "www",
+            "bundledWebRuntime": false,
+            "backgroundColor": "#040508",
+            "android": {
+              "allowMixedContent": true,
+              "captureInput": true,
+              "webContentsDebuggingEnabled": false
+            },
+            "server": {
+              "androidScheme": "https",
+              "Hostname": "localhost",
+              "allowNavigation": ["*"]
+            }
+          }
+          EOF
+
           npx cap add android
           npx cap copy android
 
-      - name: 4. Inject System Permissions (Storage & Foreground Audio)
+      - name: 5. Generate All Native Icons & Splash Screens from ./logo.png
         run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          sed -i 's/<application/<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" \/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" \/>\n    <uses-permission android:name="android.permission.WAKE_LOCK" \/>\n    <application/' $MANIFEST
+          node << 'EOF'
+          const sharp = require('sharp');
+          const fs = require('fs');
+          const path = require('path');
 
-      - name: 5. Compile Native APK
+          const resDir = path.join('android', 'app', 'src', 'main', 'res');
+          const logoPath = 'logo.png';
+          const bgDark = { r: 4, g: 5, b: 8, alpha: 1 };
+
+          async function generateAssets() {
+            const mipmaps = [
+              { folder: 'mipmap-mdpi', launcher: 48, foreground: 108 },
+              { folder: 'mipmap-hdpi', launcher: 72, foreground: 162 },
+              { folder: 'mipmap-xhdpi', launcher: 96, foreground: 216 },
+              { folder: 'mipmap-xxhdpi', launcher: 144, foreground: 324 },
+              { folder: 'mipmap-xxxhdpi', launcher: 192, foreground: 432 }
+            ];
+
+            for (const m of mipmaps) {
+              const dir = path.join(resDir, m.folder);
+              fs.mkdirSync(dir, { recursive: true });
+
+              // 1. Standard Square/Legacy Launcher Icon
+              const iconSize = Math.round(m.launcher * 0.78);
+              const resizedLogo = await sharp(logoPath)
+                .resize(iconSize, iconSize, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                .toBuffer();
+
+              await sharp({
+                create: { width: m.launcher, height: m.launcher, channels: 4, background: bgDark }
+              })
+                .composite([{ input: resizedLogo, gravity: 'center' }])
+                .png()
+                .toFile(path.join(dir, 'ic_launcher.png'));
+
+              // 2. Round Launcher Icon
+              const radius = m.launcher / 2;
+              const circleSvg = Buffer.from(
+                `<svg width="${m.launcher}" height="${m.launcher}"><circle cx="${radius}" cy="${radius}" r="${radius}" fill="#040508"/></svg>`
+              );
+              await sharp(circleSvg)
+                .composite([{ input: resizedLogo, gravity: 'center' }])
+                .png()
+                .toFile(path.join(dir, 'ic_launcher_round.png'));
+
+              // 3. Adaptive Icon Foreground (62% safe zone so Android masks never clip logo.png)
+              const fgLogoSize = Math.round(m.foreground * 0.62);
+              const fgLogo = await sharp(logoPath)
+                .resize(fgLogoSize, fgLogoSize, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                .toBuffer();
+
+              await sharp({
+                create: { width: m.foreground, height: m.foreground, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+              })
+                .composite([{ input: fgLogo, gravity: 'center' }])
+                .png()
+                .toFile(path.join(dir, 'ic_launcher_foreground.png'));
+            }
+
+            // 4. Notification Status Bar Icon
+            const drawableDir = path.join(resDir, 'drawable');
+            fs.mkdirSync(drawableDir, { recursive: true });
+            await sharp(logoPath)
+              .resize(96, 96, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+              .png()
+              .toFile(path.join(drawableDir, 'ic_stat_music.png'));
+
+            // 5. Replace all Splash Screens with #040508 dark background + centered logo.png
+            const findSplashFiles = (dir) => {
+              let results = [];
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  results = results.concat(findSplashFiles(fullPath));
+                } else if (entry.name === 'splash.png') {
+                  results.push(fullPath);
+                }
+              }
+              return results;
+            };
+
+            const splashLogo = await sharp(logoPath)
+              .resize(280, 280, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+              .toBuffer();
+
+            for (const splashFile of findSplashFiles(resDir)) {
+              const meta = await sharp(splashFile).metadata();
+              const w = meta.width || 1080;
+              const h = meta.height || 1920;
+              await sharp({
+                create: { width: w, height: h, channels: 4, background: bgDark }
+              })
+                .composite([{ input: splashLogo, gravity: 'center' }])
+                .png()
+                .toFile(splashFile);
+            }
+
+            // 6. Set Adaptive Icon Background Color to #040508
+            const bgXmlPath = path.join(resDir, 'values', 'ic_launcher_background.xml');
+            fs.writeFileSync(
+              bgXmlPath,
+              `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#040508</color>\n</resources>\n`
+            );
+          }
+
+          generateAssets().catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
+
+      - name: 6. Inject Native Foreground Media Service & MainActivity
+        run: |
+          JAVA_DIR="android/app/src/main/java/com/muse/mywebapp"
+          mkdir -p "$JAVA_DIR"
+
+          # A. Create MuseAudioService.java (Foreground Media Playback + WakeLock + WifiLock + Lockscreen Controls)
+          cat << 'EOF' > "$JAVA_DIR/MuseAudioService.java"
+          package com.muse.mywebapp;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.content.pm.ServiceInfo;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.media.AudioManager;
+          import android.media.MediaMetadata;
+          import android.media.session.MediaSession;
+          import android.media.session.PlaybackState;
+          import android.net.wifi.WifiManager;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.IBinder;
+          import android.os.Looper;
+          import android.os.PowerManager;
+          import android.os.SystemClock;
+          import android.view.KeyEvent;
+
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          public class MuseAudioService extends Service {
+              public static final String CHANNEL_ID = "muse_playback_channel_v1";
+              public static final int NOTIFICATION_ID = 2026;
+
+              public static final String ACTION_UPDATE = "com.muse.mywebapp.ACTION_UPDATE";
+              public static final String ACTION_PLAY = "com.muse.mywebapp.ACTION_PLAY";
+              public static final String ACTION_PAUSE = "com.muse.mywebapp.ACTION_PAUSE";
+              public static final String ACTION_TOGGLE = "com.muse.mywebapp.ACTION_TOGGLE";
+              public static final String ACTION_NEXT = "com.muse.mywebapp.ACTION_NEXT";
+              public static final String ACTION_PREV = "com.muse.mywebapp.ACTION_PREV";
+
+              private MediaSession mediaSession;
+              private PowerManager.WakeLock wakeLock;
+              private WifiManager.WifiLock wifiLock;
+              private final ExecutorService artworkExecutor = Executors.newSingleThreadExecutor();
+              private final Handler keepAliveHandler = new Handler(Looper.getMainLooper());
+
+              private String currentTitle = "Muse";
+              private String currentArtist = "Museum of Musics";
+              private String currentAlbum = "Muse";
+              private String currentCoverUrl = "";
+              private Bitmap currentArtwork = null;
+              private boolean isPlaying = false;
+              private long durationMs = 0L;
+              private long positionMs = 0L;
+              private boolean noisyReceiverRegistered = false;
+
+              private final BroadcastReceiver becomingNoisyReceiver = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(intent.getAction())) {
+                          MainActivity.dispatchMediaCommand("pause", -1);
+                      }
+                  }
+              };
+
+              private final Runnable webViewKeepAliveRunnable = new Runnable() {
+                  @Override
+                  public void run() {
+                      MainActivity.keepWebViewTimersActive();
+                      if (isPlaying) {
+                          keepAliveHandler.postDelayed(this, 3500);
+                      }
+                  }
+              };
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  createNotificationChannel();
+                  initLocks();
+                  initMediaSession();
+                  registerNoisyReceiver();
+              }
+
+              private void initLocks() {
+                  try {
+                      PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                      if (pm != null) {
+                          wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Muse::AudioWakeLock");
+                          wakeLock.setReferenceCounted(false);
+                      }
+                      WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                      if (wm != null) {
+                          int lockMode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                              ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                              : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                          wifiLock = wm.createWifiLock(lockMode, "Muse::AudioWifiLock");
+                          wifiLock.setReferenceCounted(false);
+                      }
+                  } catch (Exception ignored) {}
+              }
+
+              private void acquireLocks() {
+                  try {
+                      if (wakeLock != null && !wakeLock.isHeld()) {
+                          wakeLock.acquire();
+                      }
+                      if (wifiLock != null && !wifiLock.isHeld()) {
+                          wifiLock.acquire();
+                      }
+                  } catch (Exception ignored) {}
+              }
+
+              private void releaseLocks() {
+                  try {
+                      if (wakeLock != null && wakeLock.isHeld()) {
+                          wakeLock.release();
+                      }
+                      if (wifiLock != null && wifiLock.isHeld()) {
+                          wifiLock.release();
+                      }
+                  } catch (Exception ignored) {}
+              }
+
+              private void registerNoisyReceiver() {
+                  if (noisyReceiverRegistered) return;
+                  try {
+                      IntentFilter filter = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                          registerReceiver(becomingNoisyReceiver, filter, Context.RECEIVER_EXPORTED);
+                      } else {
+                          registerReceiver(becomingNoisyReceiver, filter);
+                      }
+                      noisyReceiverRegistered = true;
+                  } catch (Exception ignored) {}
+              }
+
+              private void initMediaSession() {
+                  mediaSession = new MediaSession(this, "MuseMediaSession");
+                  mediaSession.setCallback(new MediaSession.Callback() {
+                      @Override
+                      public void onPlay() {
+                          MainActivity.dispatchMediaCommand("play", -1);
+                      }
+
+                      @Override
+                      public void onPause() {
+                          MainActivity.dispatchMediaCommand("pause", -1);
+                      }
+
+                      @Override
+                      public void onSkipToNext() {
+                          MainActivity.dispatchMediaCommand("next", -1);
+                      }
+
+                      @Override
+                      public void onSkipToPrevious() {
+                          MainActivity.dispatchMediaCommand("prev", -1);
+                      }
+
+                      @Override
+                      public void onSeekTo(long pos) {
+                          positionMs = pos;
+                          updateMediaSessionState();
+                          MainActivity.dispatchMediaCommand("seek", pos);
+                      }
+
+                      @Override
+                      public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
+                          KeyEvent event = mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+                          if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
+                              int keyCode = event.getKeyCode();
+                              if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY) {
+                                  MainActivity.dispatchMediaCommand("play", -1);
+                                  return true;
+                              } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+                                  MainActivity.dispatchMediaCommand("pause", -1);
+                                  return true;
+                              } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE || keyCode == KeyEvent.KEYCODE_HEADSETHOOK) {
+                                  MainActivity.dispatchMediaCommand("toggle", -1);
+                                  return true;
+                              } else if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT) {
+                                  MainActivity.dispatchMediaCommand("next", -1);
+                                  return true;
+                              } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
+                                  MainActivity.dispatchMediaCommand("prev", -1);
+                                  return true;
+                              }
+                          }
+                          return super.onMediaButtonEvent(mediaButtonIntent);
+                      }
+                  });
+                  mediaSession.setActive(true);
+              }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  if (intent != null && intent.getAction() != null) {
+                      String action = intent.getAction();
+                      switch (action) {
+                          case ACTION_PLAY:
+                              MainActivity.dispatchMediaCommand("play", -1);
+                              return START_STICKY;
+                          case ACTION_PAUSE:
+                              MainActivity.dispatchMediaCommand("pause", -1);
+                              return START_STICKY;
+                          case ACTION_TOGGLE:
+                              MainActivity.dispatchMediaCommand("toggle", -1);
+                              return START_STICKY;
+                          case ACTION_NEXT:
+                              MainActivity.dispatchMediaCommand("next", -1);
+                              return START_STICKY;
+                          case ACTION_PREV:
+                              MainActivity.dispatchMediaCommand("prev", -1);
+                              return START_STICKY;
+                          case ACTION_UPDATE:
+                              String newTitle = intent.getStringExtra("title");
+                              String newArtist = intent.getStringExtra("artist");
+                              String newAlbum = intent.getStringExtra("album");
+                              String newCover = intent.getStringExtra("coverUrl");
+
+                              if (newTitle != null) currentTitle = newTitle;
+                              if (newArtist != null) currentArtist = newArtist;
+                              if (newAlbum != null) currentAlbum = newAlbum;
+                              isPlaying = intent.getBooleanExtra("isPlaying", false);
+                              durationMs = intent.getLongExtra("durationMs", 0L);
+                              positionMs = intent.getLongExtra("positionMs", 0L);
+
+                              if (newCover != null && !newCover.equals(currentCoverUrl)) {
+                                  currentCoverUrl = newCover;
+                                  fetchArtworkAsync(newCover);
+                              }
+                              break;
+                      }
+                  }
+
+                  if (isPlaying) {
+                      acquireLocks();
+                      keepAliveHandler.removeCallbacks(webViewKeepAliveRunnable);
+                      keepAliveHandler.post(webViewKeepAliveRunnable);
+                  } else {
+                      keepAliveHandler.removeCallbacks(webViewKeepAliveRunnable);
+                  }
+
+                  updateMediaSessionState();
+                  Notification notification = buildNotification();
+
+                  try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+                      } else {
+                          startForeground(NOTIFICATION_ID, notification);
+                      }
+                  } catch (Exception ignored) {}
+
+                  return START_STICKY;
+              }
+
+              private void fetchArtworkAsync(final String urlStr) {
+                  if (urlStr == null || urlStr.isEmpty() || urlStr.startsWith("data:") || urlStr.startsWith("blob:")) {
+                      return;
+                  }
+                  artworkExecutor.execute(() -> {
+                      HttpURLConnection conn = null;
+                      try {
+                          URL url = new URL(urlStr);
+                          conn = (HttpURLConnection) url.openConnection();
+                          conn.setConnectTimeout(5000);
+                          conn.setReadTimeout(5000);
+                          conn.setDoInput(true);
+                          conn.connect();
+                          try (InputStream is = conn.getInputStream()) {
+                              Bitmap bmp = BitmapFactory.decodeStream(is);
+                              if (bmp != null) {
+                                  currentArtwork = bmp;
+                                  keepAliveHandler.post(() -> {
+                                      updateMediaSessionState();
+                                      NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                                      if (nm != null) {
+                                          nm.notify(NOTIFICATION_ID, buildNotification());
+                                      }
+                                  });
+                              }
+                          }
+                      } catch (Exception ignored) {
+                      } finally {
+                          if (conn != null) conn.disconnect();
+                      }
+                  });
+              }
+
+              private void updateMediaSessionState() {
+                  if (mediaSession == null) return;
+
+                  int state = isPlaying ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
+                  float speed = isPlaying ? 1.0f : 0.0f;
+
+                  PlaybackState playbackState = new PlaybackState.Builder()
+                      .setActions(
+                          PlaybackState.ACTION_PLAY |
+                          PlaybackState.ACTION_PAUSE |
+                          PlaybackState.ACTION_PLAY_PAUSE |
+                          PlaybackState.ACTION_SKIP_TO_NEXT |
+                          PlaybackState.ACTION_SKIP_TO_PREVIOUS |
+                          PlaybackState.ACTION_SEEK_TO
+                      )
+                      .setState(state, positionMs, speed, SystemClock.elapsedRealtime())
+                      .build();
+                  mediaSession.setPlaybackState(playbackState);
+
+                  MediaMetadata.Builder metaBuilder = new MediaMetadata.Builder()
+                      .putString(MediaMetadata.METADATA_KEY_TITLE, currentTitle)
+                      .putString(MediaMetadata.METADATA_KEY_ARTIST, currentArtist)
+                      .putString(MediaMetadata.METADATA_KEY_ALBUM, currentAlbum)
+                      .putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs);
+
+                  if (currentArtwork != null) {
+                      metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, currentArtwork);
+                  } else {
+                      Bitmap fallback = BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
+                      if (fallback != null) {
+                          metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, fallback);
+                      }
+                  }
+                  mediaSession.setMetadata(metaBuilder.build());
+              }
+
+              private PendingIntent buildServiceActionIntent(String action, int requestCode) {
+                  Intent intent = new Intent(this, MuseAudioService.class);
+                  intent.setAction(action);
+                  int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+                  return PendingIntent.getService(this, requestCode, intent, flags);
+              }
+
+              private Notification buildNotification() {
+                  Intent openAppIntent = new Intent(this, MainActivity.class);
+                  openAppIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                  PendingIntent contentIntent = PendingIntent.getActivity(
+                      this, 100, openAppIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                  );
+
+                  Notification.Action prevAction = new Notification.Action.Builder(
+                      android.R.drawable.ic_media_previous, "Previous", buildServiceActionIntent(ACTION_PREV, 1)
+                  ).build();
+
+                  Notification.Action playPauseAction = new Notification.Action.Builder(
+                      isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
+                      isPlaying ? "Pause" : "Play",
+                      buildServiceActionIntent(ACTION_TOGGLE, 2)
+                  ).build();
+
+                  Notification.Action nextAction = new Notification.Action.Builder(
+                      android.R.drawable.ic_media_next, "Next", buildServiceActionIntent(ACTION_NEXT, 3)
+                  ).build();
+
+                  Notification.MediaStyle style = new Notification.MediaStyle()
+                      .setMediaSession(mediaSession.getSessionToken())
+                      .setShowActionsInCompactView(0, 1, 2);
+
+                  Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                      ? new Notification.Builder(this, CHANNEL_ID)
+                      : new Notification.Builder(this);
+
+                  Bitmap largeIcon = currentArtwork != null
+                      ? currentArtwork
+                      : BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
+
+                  builder.setContentTitle(currentTitle)
+                      .setContentText(currentArtist)
+                      .setSubText(currentAlbum)
+                      .setSmallIcon(R.drawable.ic_stat_music)
+                      .setLargeIcon(largeIcon)
+                      .setContentIntent(contentIntent)
+                      .setVisibility(Notification.VISIBILITY_PUBLIC)
+                      .setOngoing(isPlaying)
+                      .setShowWhen(false)
+                      .setStyle(style)
+                      .addAction(prevAction)
+                      .addAction(playPauseAction)
+                      .addAction(nextAction);
+
+                  return builder.build();
+              }
+
+              private void createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      NotificationChannel channel = new NotificationChannel(
+                          CHANNEL_ID,
+                          "Muse Playback Controls",
+                          NotificationManager.IMPORTANCE_LOW
+                      );
+                      channel.setDescription("Active background music playback and lockscreen controls");
+                      channel.setShowBadge(false);
+                      channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                      NotificationManager nm = getSystemService(NotificationManager.class);
+                      if (nm != null) {
+                          nm.createNotificationChannel(channel);
+                      }
+                  }
+              }
+
+              @Override
+              public void onDestroy() {
+                  keepAliveHandler.removeCallbacks(webViewKeepAliveRunnable);
+                  releaseLocks();
+                  if (noisyReceiverRegistered) {
+                      try {
+                          unregisterReceiver(becomingNoisyReceiver);
+                      } catch (Exception ignored) {}
+                  }
+                  if (mediaSession != null) {
+                      mediaSession.release();
+                  }
+                  super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
+              }
+          }
+          EOF
+
+          # B. Create MainActivity.java (Background WebView Keep-Alive + System Controls + Native File Downloads)
+          cat << 'EOF' > "$JAVA_DIR/MainActivity.java"
+          package com.muse.mywebapp;
+
+          import android.Manifest;
+          import android.content.ContentValues;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.os.PowerManager;
+          import android.os.VibrationEffect;
+          import android.os.Vibrator;
+          import android.provider.MediaStore;
+          import android.provider.Settings;
+          import android.util.Base64;
+          import android.view.Window;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.ServiceWorkerController;
+          import android.webkit.ServiceWorkerWebSettings;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.widget.Toast;
+
+          import com.getcapacitor.BridgeActivity;
+
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
+
+          public class MainActivity extends BridgeActivity {
+              private static MainActivity instance;
+
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  instance = this;
+
+                  // 1. Dark Obsidian #040508 System Status & Navigation Bars
+                  try {
+                      Window window = getWindow();
+                      int obsidian = Color.parseColor("#040508");
+                      window.setStatusBarColor(obsidian);
+                      window.setNavigationBarColor(obsidian);
+                  } catch (Exception ignored) {}
+
+                  // 2. Request Notification Permission on Android 13+ so Media Controls show immediately
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                          requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
+                      }
+                  }
+
+                  // 3. Enable ServiceWorker Offline Caching inside Android WebView
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                      try {
+                          ServiceWorkerWebSettings swSettings = ServiceWorkerController.getInstance().getServiceWorkerWebSettings();
+                          swSettings.setAllowContentAccess(true);
+                          swSettings.setAllowFileAccess(true);
+                          swSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+                      } catch (Exception ignored) {}
+                  }
+
+                  // 4. Configure WebView for Uninterrupted Background Playback & Offline Vault
+                  if (getBridge() != null && getBridge().getWebView() != null) {
+                      WebView webView = getBridge().getWebView();
+                      webView.setBackgroundColor(Color.parseColor("#040508"));
+                      WebSettings settings = webView.getSettings();
+                      settings.setMediaPlaybackRequiresUserGesture(false);
+                      settings.setDomStorageEnabled(true);
+                      settings.setDatabaseEnabled(true);
+                      settings.setJavaScriptEnabled(true);
+                      settings.setAllowFileAccess(true);
+                      settings.setAllowContentAccess(true);
+                      settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                      settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+                      webView.addJavascriptInterface(new MuseNativeBridge(this), "MuseNative");
+                  }
+              }
+
+              // Prevent Capacitor from pausing WebView audio & JS timers when screen locks or app backgrounds
+              @Override
+              public void onPause() {
+                  super.onPause();
+                  keepWebViewTimersActive();
+              }
+
+              @Override
+              public void onStop() {
+                  super.onStop();
+                  keepWebViewTimersActive();
+              }
+
+              public static void keepWebViewTimersActive() {
+                  if (instance == null) return;
+                  instance.runOnUiThread(() -> {
+                      try {
+                          if (instance.getBridge() != null && instance.getBridge().getWebView() != null) {
+                              WebView wv = instance.getBridge().getWebView();
+                              wv.onResume();
+                              wv.resumeTimers();
+                          }
+                      } catch (Exception ignored) {}
+                  });
+              }
+
+              public static void dispatchMediaCommand(final String command, final long seekMs) {
+                  if (instance == null) return;
+                  instance.runOnUiThread(() -> {
+                      try {
+                          if (instance.getBridge() != null && instance.getBridge().getWebView() != null) {
+                              WebView wv = instance.getBridge().getWebView();
+                              wv.onResume();
+                              wv.resumeTimers();
+                              String js = "window.__museNativeCommand && window.__museNativeCommand('" + command + "', " + seekMs + ");";
+                              wv.evaluateJavascript(js, null);
+                          }
+                      } catch (Exception ignored) {}
+                  });
+              }
+
+              @Override
+              @SuppressWarnings("deprecation")
+              public void onBackPressed() {
+                  if (getBridge() != null && getBridge().getWebView() != null) {
+                      getBridge().getWebView().evaluateJavascript(
+                          "(function(){ return window.__museHandleBackButton ? window.__museHandleBackButton() : 'minimize'; })()",
+                          value -> {
+                              if (value != null && value.contains("handled")) {
+                                  return;
+                              }
+                              moveTaskToBack(true);
+                          }
+                      );
+                  } else {
+                      moveTaskToBack(true);
+                  }
+              }
+
+              public static class MuseNativeBridge {
+                  private final Context context;
+
+                  public MuseNativeBridge(Context context) {
+                      this.context = context;
+                  }
+
+                  @JavascriptInterface
+                  public void updateMediaState(
+                      String title,
+                      String artist,
+                      String album,
+                      String coverUrl,
+                      boolean isPlaying,
+                      long durationMs,
+                      long positionMs
+                  ) {
+                      Intent serviceIntent = new Intent(context, MuseAudioService.class);
+                      serviceIntent.setAction(MuseAudioService.ACTION_UPDATE);
+                      serviceIntent.putExtra("title", title);
+                      serviceIntent.putExtra("artist", artist);
+                      serviceIntent.putExtra("album", album);
+                      serviceIntent.putExtra("coverUrl", coverUrl);
+                      serviceIntent.putExtra("isPlaying", isPlaying);
+                      serviceIntent.putExtra("durationMs", durationMs);
+                      serviceIntent.putExtra("positionMs", positionMs);
+
+                      try {
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              context.startForegroundService(serviceIntent);
+                          } else {
+                              context.startService(serviceIntent);
+                          }
+                      } catch (Exception ignored) {}
+                  }
+
+                  @JavascriptInterface
+                  public void triggerHaptic(int durationMs) {
+                      try {
+                          Vibrator v = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+                          if (v != null && v.hasVibrator()) {
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                  v.vibrate(VibrationEffect.createOneShot(Math.max(10, durationMs), VibrationEffect.DEFAULT_AMPLITUDE));
+                              } else {
+                                  v.vibrate(Math.max(10, durationMs));
+                              }
+                          }
+                      } catch (Exception ignored) {}
+                  }
+
+                  @JavascriptInterface
+                  public void requestUnrestrictedBattery() {
+                      try {
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                              PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                              String pkg = context.getPackageName();
+                              if (pm != null && !pm.isIgnoringBatteryOptimizations(pkg)) {
+                                  Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                                  intent.setData(Uri.parse("package:" + pkg));
+                                  intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  context.startActivity(intent);
+                              }
+                          }
+                      } catch (Exception ignored) {}
+                  }
+
+                  @JavascriptInterface
+                  public void saveBase64FileToDownloads(String base64Data, String fileName, String mimeType) {
+                      try {
+                          byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                              ContentValues values = new ContentValues();
+                              values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                              values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                              values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Muse");
+
+                              Uri uri = context.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                              if (uri != null) {
+                                  try (OutputStream os = context.getContentResolver().openOutputStream(uri)) {
+                                      if (os != null) os.write(bytes);
+                                  }
+                              }
+                          } else {
+                              File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Muse");
+                              if (!dir.exists()) dir.mkdirs();
+                              File outFile = new File(dir, fileName);
+                              try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                                  fos.write(bytes);
+                              }
+                          }
+                          if (instance != null) {
+                              instance.runOnUiThread(() ->
+                                  Toast.makeText(context, "Saved to Downloads/Muse: " + fileName, Toast.LENGTH_LONG).show()
+                              );
+                          }
+                      } catch (Exception e) {
+                          if (instance != null) {
+                              instance.runOnUiThread(() ->
+                                  Toast.makeText(context, "Download failed: " + e.getMessage(), Toast.LENGTH_SHORT).show()
+                              );
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: 7. Configure AndroidManifest.xml Permissions & Media Service
+        run: |
+          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- Network & Offline Caching -->
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+              <!-- Uninterrupted Background Playback & Lockscreen Controls -->
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <!-- Audio & Backup File Storage -->
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:usesCleartextTraffic="true"
+                  android:hardwareAccelerated="true"
+                  android:largeHeap="true"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+                      android:name=".MainActivity"
+                      android:label="@string/title_activity_main"
+                      android:theme="@style/AppTheme.NoActionBarLaunch"
+                      android:launchMode="singleTask"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <!-- Native Foreground Media Playback Service -->
+                  <service
+                      android:name=".MuseAudioService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:stopWithTask="false"
+                      android:foregroundServiceType="mediaPlayback" />
+
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="${applicationId}.fileprovider"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths" />
+                  </provider>
+              </application>
+          </manifest>
+          EOF
+
+      - name: 8. Compile Native Android APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: 6. Provide APK for Download
+      - name: 9. Upload Finished APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Finished-App-APK
+          name: Muse-Native-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
