@@ -1,0 +1,53 @@
+name: Cloud Build APK (No PC)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: # Lets you trigger the build manually with a button on your phone
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Your Web Files
+        uses: actions/checkout@v4
+
+      - name: 2. Set up Node.js & Java 17
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: 3. Bundle Web Files & Initialize Capacitor in Cloud
+        run: |
+          # Move your HTML/CSS/JS into a clean 'www' folder
+          mkdir www
+          find . -maxdepth 1 -not -name 'www' -not -name '.*' -exec cp -r {} www/ \;
+          
+          # Initialize NPM and Capacitor from scratch on the server
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "MyMusicApp" "com.music.mywebapp" --web-dir www
+          npx cap add android
+          npx cap copy android
+
+      - name: 4. Inject System Permissions (Storage & Foreground Audio)
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i 's/<application/<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" \/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" \/>\n    <uses-permission android:name="android.permission.WAKE_LOCK" \/>\n    <application/' $MANIFEST
+
+      - name: 5. Compile Native APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: 6. Provide APK for Download
+        uses: actions/upload-artifact@v4
+        with:
+          name: Finished-App-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
