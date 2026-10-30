@@ -3,7 +3,7 @@ name: Cloud Build APK (No PC)
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Lets you trigger the build manually with a button on your phone
+  workflow_dispatch:
 
 jobs:
   build-apk:
@@ -13,25 +13,23 @@ jobs:
       - name: 1. Checkout Your Web Files
         uses: actions/checkout@v4
 
-      - name: 2. Set up Node.js & Java 17
+      - name: 2. Set up Node.js & Java 21
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: '17'
+          java-version: '21'
 
       - name: 3. Bundle Web Files & Initialize Capacitor in Cloud
         run: |
-          # Move your HTML/CSS/JS into a clean 'www' folder
           mkdir www
           find . -maxdepth 1 -not -name 'www' -not -name '.*' -exec cp -r {} www/ \;
           
-          # Initialize NPM and Capacitor from scratch on the server
           npm init -y
           npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap init "MyMusicApp" "com.music.mywebapp" --web-dir www
+          npx cap init "Muse" "com.muse.mywebapp" --web-dir www
           npx cap add android
           npx cap copy android
 
