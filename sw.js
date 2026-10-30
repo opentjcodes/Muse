@@ -26,8 +26,6 @@ const MAX_API_JSON_ITEMS = 180;
 const CORE_SHELL_URLS = [
   "./",
   "./index.html",
-  "./cast-engine.js",
-  "./tv-receiver.html",
   "./manifest.json",
   "./logo.png"
 ];
@@ -148,8 +146,6 @@ self.addEventListener("fetch", (event) => {
     (url.origin === self.location.origin &&
       (url.pathname.endsWith("/") ||
         url.pathname.endsWith("/index.html") ||
-        url.pathname.endsWith("/cast-engine.js") ||
-        url.pathname.endsWith("/tv-receiver.html") ||
         url.pathname.endsWith("/manifest.json") ||
         url.pathname.endsWith("/logo.png")))
   ) {
@@ -297,7 +293,7 @@ self.addEventListener("fetch", (event) => {
                   index: 0,
                   time: 0,
                   endTime: 999,
-                  text: "Offline Mode — Playing from App Vault",
+                  text: "Offline Mode",
                   plainOnly: true,
                   words: []
                 }
