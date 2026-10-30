@@ -3,7 +3,7 @@
   "id": "./",
   "name": "Muse — Museum of Musics",
   "short_name": "Muse",
-  "description": "High-resolution 320kbps music player with real-time word-by-word lyrics, zero-install TV casting, in-app offline vault, and pure liquid glass UI.",
+  "description": "High-resolution 320kbps music player with real-time word-by-word lyrics, in-app offline download, and pure liquid glass UI.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "fullscreen",
@@ -64,7 +64,7 @@
   ],
   "shortcuts": [
     {
-      "name": "Downloads & Offline Vault",
+      "name": "Downloads & Offline Library",
       "short_name": "Downloads",
       "description": "Play your downloaded offline songs with synced lyrics",
       "url": "./index.html#library",
